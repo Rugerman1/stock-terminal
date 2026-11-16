@@ -32,13 +32,13 @@ from textual.widgets import (
     TabPane,
 )
 
-from .datapoint import DELAYED_MARK, STALE_MARK, human_age
+from .datapoint import DELAYED_MARK, FRESH, STALE_MARK, human_age
 from .logging_setup import CallbackHandler
 from .provider import Board, Provider
 from .watchlist import Watchlist
 
 NY = ZoneInfo("America/New_York")
-COLUMNS = ("Ticker", "Price", "Chg %", "Long-term", "Options", "Earnings", "Validity", "Data")
+COLUMNS = ("Ticker", "Price", "Chg %", "LT", "Opt", "Earn", "Validity", "Data")
 # No signal has ever been produced, so by the spec's own definition every label is UNPROVEN (under 30 scored).
 VALIDITY_PLACEHOLDER = "UNPROVEN 0/30"
 PHASE_PLACEHOLDER = "--"
@@ -84,14 +84,13 @@ class TickerPrompt(ModalScreen[Optional[str]]):
 
 
 class StockTerminalApp(App[None]):
-    TITLE = "Stock Terminal"
-    SUB_TITLE = "read-only, no orders, ever"
+    TITLE = "Stock Terminal: read-only, no orders, ever"
     CSS = """
-    #top-strip { height: 3; padding: 0 1; background: $panel; border-bottom: solid $primary; }
+    #top-strip { height: auto; padding: 0 1; background: $panel; border-bottom: solid $primary; }
     #main { height: 1fr; }
-    #watchlist { width: 46%; }
-    #news { width: 27%; border-left: solid $primary; padding: 0 1; }
-    #detail { width: 27%; border-left: solid $primary; }
+    #watchlist { width: 46%; min-width: 74; }
+    #news { width: 1fr; min-width: 20; border-left: solid $primary; padding: 0 1; }
+    #detail { width: 1fr; min-width: 24; border-left: solid $primary; }
     #log-panel { height: auto; }
     #log { height: 8; }
     """
@@ -126,7 +125,7 @@ class StockTerminalApp(App[None]):
 
     # ----- layout -----
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
+        yield Header()
         yield Static(self.strip_text, id="top-strip")
         with Horizontal(id="main"):
             yield DataTable(id="watchlist")
@@ -258,11 +257,11 @@ class StockTerminalApp(App[None]):
             quote = self.board.quotes.get(ticker) if self.board else None
             if quote is None:
                 price, change = "--", "--"
-                data = "loading" if self.board is None else "MISSING: not in response"
+                data = "loading" if self.board is None else "MISSING"
             else:
                 price = quote.price.display()
                 change = quote.change_pct.display("{:+.2f}%")
-                data = quote.price.status_label() or quote.price.source
+                data = "ok" if quote.price.status == FRESH else quote.price.status.upper()
             table.add_row(
                 ticker, price, change,
                 PHASE_PLACEHOLDER, PHASE_PLACEHOLDER, PHASE_PLACEHOLDER,

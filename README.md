@@ -73,8 +73,8 @@ names.
 SPY 672.10 (+0.41%)   QQQ 600.20 (+0.55%)   VIX 18.70 (Nov 12)   10Y 5.10% (Nov 12)
 Market CLOSED, opens Mon Nov 16 9:30 AM ET | Newest IEX trade 2d ago | Refreshed ... | * stale  ~ delayed  -- missing
 +----------------------------------------------+-----------------------+-----------------------+
-| Ticker Price   Chg %  Long-term Options ...  | News (Phase 2)        | Score | Options | Validity |
-| AAPL   272.41  +0.80% --        --      ...  |                       |                       |
+| Ticker Price   Chg %  LT  Opt Earn Validity  | News (Phase 2)        | Score | Options | Validity |
+| AAPL   272.41  +0.80% --  --  --   UNPROVEN  |                       |                       |
 +----------------------------------------------+-----------------------+-----------------------+
 > Log (l to toggle)
 ```
@@ -90,10 +90,10 @@ Market CLOSED, opens Mon Nov 16 9:30 AM ET | Newest IEX trade 2d ago | Refreshed
 
 How to read a number:
 
-- A plain number is fresh. `*` means stale: the source failed and this is the last value we had, with its age in the
-  Data column. `~` means delayed: the trade is older than 15 minutes while the market is open. `--` means missing, and
-  the Data column says why (for example `MISSING: no Alpaca key in .env`). Nothing is ever filled in with a
-  placeholder.
+- A plain number is fresh. `*` means stale: the source failed and this is the last value we had. `~` means delayed:
+  the trade is older than 15 minutes while the market is open. `--` means missing. The Data column carries the one-word
+  status (`ok`, `STALE`, `DELAYED`, `MISSING`) and the top strip's `Missing:` note says why (for example
+  `no Alpaca key in .env`). Nothing is ever filled in with a placeholder.
 - Prices come from Alpaca's IEX feed: one exchange, real-time, free. The official consolidated price can differ by
   a cent or two.
 - `Chg %` is the change against the previous session's close.

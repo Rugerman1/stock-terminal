@@ -62,7 +62,7 @@ async def test_table_and_strip_render(tmp_path, cfg):
         assert table.row_count == 2
         first = [str(c) for c in table.get_row_at(0)]
         assert first[0] == "AAPL" and first[1] == "102.00" and first[2] == "+1.00%"
-        assert first[6] == "UNPROVEN 0/30" and first[7] == "alpaca/iex"
+        assert first[6] == "UNPROVEN 0/30" and first[7] == "ok"
         assert provider.calls == [["SPY", "QQQ", "AAPL", "MSFT"]]
         assert "SPY 100.00" in app.strip_text and "VIX 18.70" in app.strip_text and "10Y 5.10%" in app.strip_text
         assert "Market CLOSED" in app.strip_text and "Newest IEX trade" in app.strip_text
@@ -74,7 +74,7 @@ async def test_missing_data_is_shown_not_invented(tmp_path, cfg):
         await settle(app, pilot)
         table = app.query_one("#watchlist", DataTable)
         row = [str(c) for c in table.get_row_at(0)]
-        assert row[1] == "--" and row[2] == "--" and row[7] == "MISSING: no Alpaca key in .env"
+        assert row[1] == "--" and row[2] == "--" and row[7] == "MISSING"
         assert "SPY -- (--)" in app.strip_text and "Missing: no Alpaca key in .env" in app.strip_text
 
 
