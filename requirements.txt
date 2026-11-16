@@ -1,0 +1,9 @@
+# Direct dependencies, pinned to the versions installed and tested on 2026-11-15.
+# Install: .venv\Scripts\python -m pip install -r requirements.txt
+textual==8.2.8
+alpaca-py==0.45.0
+PyYAML==6.0.3
+python-dotenv==1.2.4
+httpx==0.28.1
+pytest==9.2.0
+pytest-asyncio==1.5.0
