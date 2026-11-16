@@ -125,7 +125,7 @@ class StockTerminalApp(App[None]):
 
     # ----- layout -----
     def compose(self) -> ComposeResult:
-        yield Header()
+        yield Header()  # no clock: the strip's Refreshed stamp, in ET, is the time of record
         yield Static(self.strip_text, id="top-strip")
         with Horizontal(id="main"):
             yield DataTable(id="watchlist")
