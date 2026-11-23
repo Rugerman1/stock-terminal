@@ -302,7 +302,8 @@ class QuantEngine:
     ) -> QuantBoard:
         raws = self.raw_factors(scorable, tickers, metrics, now)
         scores = score_all(
-            raws, members, self.q["weights"], float(self.q["zscore_cap"]), float(self.q["label_top_pct"]), float(self.q["label_bottom_pct"])
+            raws, members, self.q["weights"], float(self.q["zscore_cap"]), float(self.q["label_top_pct"]), float(self.q["label_bottom_pct"]),
+            clip_pct=float(self.q.get("quality_clip_pct", 0)),
         )
         self.store.save_scores(now, [s.to_row() for s in scores.values()])
         events: list[str] = []

@@ -71,6 +71,7 @@ DEFAULTS: dict[str, Any] = {
         "news_halflife_days": 3,
         "news_min_headlines": 5,
         "news_window_days": 30,
+        "quality_clip_pct": 5,
         "universe_news": True,
         "signal_horizon_days": 63,
     },
@@ -189,6 +190,9 @@ def validate(cfg: Mapping[str, Any]) -> None:
         pct = cfg["quant"][name]
         if not isinstance(pct, (int, float)) or isinstance(pct, bool) or not 0 < pct <= 50:
             raise ConfigError(f"quant.{name} must be between 0 and 50, got {pct!r}")
+    clip = cfg["quant"]["quality_clip_pct"]
+    if not isinstance(clip, (int, float)) or isinstance(clip, bool) or not 0 <= clip < 50:
+        raise ConfigError(f"quant.quality_clip_pct must be 0 (off) or under 50, got {clip!r}")
     weights = cfg["quant"]["weights"]
     expected = ("momentum", "trend", "value", "quality", "low_risk", "news")
     if not isinstance(weights, Mapping) or set(weights) != set(expected):

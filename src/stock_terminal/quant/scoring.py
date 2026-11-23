@@ -7,12 +7,19 @@ on screen. Top 20 percent of the universe by composite = Favorable, bottom 20 pe
 margin, negative debt-to-equity) because its parts have different units; Value is the
 plain average of two yields, which share a unit. Weights live in config.yaml and are
 never tuned to past data.
+
+Quality's three inputs are clipped at the universe's 5th and 95th percentile before
+the mean and std are taken (Tyler's call, 2026-11-22): a few names with near-zero book
+equity (ROE of 575 percent, debt-to-equity of 81) were stretching the spread so far
+that every other name's z collapsed toward zero. A clipped name says so on screen.
 """
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+import numpy as np
 
 from .factors import FactorValue, mean_std, zscore
 
@@ -101,21 +108,41 @@ class Score:
         }
 
 
-def universe_stats(raws: dict[str, RawFactors], members: set[str]) -> dict[str, tuple[Optional[float], Optional[float], int]]:
-    """Mean, sample std and count for every factor and quality part, over universe members that have the value."""
+MIN_FOR_CLIP = 20   # fewer universe values than this and the percentile bounds mean nothing
+
+
+def clip_bounds(values: list[float], pct: float) -> Optional[tuple[float, float]]:
+    """The universe's pct-th and (100 - pct)-th percentile, or None when clipping is off or the sample is too small."""
+    if pct <= 0 or len(values) < MIN_FOR_CLIP:
+        return None
+    lo, hi = np.percentile(np.asarray(values, dtype=float), [pct, 100.0 - pct])
+    return float(lo), float(hi)
+
+
+def universe_stats(raws: dict[str, RawFactors], members: set[str], clip_pct: float = 0.0) -> tuple[dict[str, tuple[Optional[float], Optional[float], int]], dict[str, tuple[float, float]]]:
+    """(stats, bounds): mean, sample std and count per factor and quality part over the members that have the value.
+
+    Quality parts are clipped at the universe's clip_pct-th and (100 - clip_pct)-th percentile before the mean and std;
+    `bounds` holds the clip range per part so a clipped name can be shown as such."""
     stats: dict[str, tuple[Optional[float], Optional[float], int]] = {}
+    bounds: dict[str, tuple[float, float]] = {}
     for name in ("momentum", "trend", "low_risk", "value", "news"):
         values = [r.values[name].value for s, r in raws.items() if s in members and name in r.values and r.values[name].ok]
         avg, sd = mean_std(values)
         stats[name] = (avg, sd, len(values))
     for part in QUALITY_PARTS:
         values = [r.quality[part].value for s, r in raws.items() if s in members and part in r.quality and r.quality[part].ok]
+        limits = clip_bounds(values, clip_pct)
+        if limits is not None:
+            bounds[part] = limits
+            values = [min(max(v, limits[0]), limits[1]) for v in values]
         avg, sd = mean_std(values)
         stats[part] = (avg, sd, len(values))
-    return stats
+    return stats, bounds
 
 
-def _score_one(raw: RawFactors, stats: dict, weights: dict[str, float], cap: float) -> tuple[Optional[float], list[FactorScore], list[str]]:
+def _score_one(raw: RawFactors, stats: dict, weights: dict[str, float], cap: float, bounds: Optional[dict[str, tuple[float, float]]] = None) -> tuple[Optional[float], list[FactorScore], list[str]]:
+    bounds = bounds or {}
     factors: list[FactorScore] = []
     notes: list[str] = []
     composite = 0.0
@@ -128,9 +155,19 @@ def _score_one(raw: RawFactors, stats: dict, weights: dict[str, float], cap: flo
             for part in QUALITY_PARTS:
                 fv = raw.quality.get(part) or FactorValue(part, None, "not computed")
                 avg, sd, n = stats.get(part, (None, None, 0))
-                z = zscore(fv.value, avg, sd, cap)
+                used = fv.value
+                inputs = dict(fv.inputs)
+                if fv.ok and part in bounds:
+                    lo, hi = bounds[part]
+                    used = min(max(fv.value, lo), hi)
+                    inputs["clip_bounds"] = (lo, hi)
+                    if used != fv.value:
+                        inputs["clipped_from"] = fv.value
+                z = zscore(used, avg, sd, cap)
                 note = fv.note if not fv.ok else ("" if z is not None else f"no universe spread (n={n})")
-                components[part] = FactorScore(part, 0.0, fv.value, z, 0.0, avg, sd, note, fv.inputs, n=n)
+                if "clipped_from" in inputs:
+                    note = (note + "; " if note else "") + f"clipped from {raw_text(part, fv.value)} to the universe's {raw_text(part, used)}"
+                components[part] = FactorScore(part, 0.0, used, z, 0.0, avg, sd, note, inputs, n=n)
                 if z is not None:
                     zs.append(z)
             z_quality = sum(zs) / len(zs) if zs else None
@@ -161,11 +198,13 @@ def score_all(
     cap: float = 3.0,
     top_pct: float = 20.0,
     bottom_pct: float = 20.0,
+    clip_pct: float = 0.0,
 ) -> dict[str, Score]:
-    """Score every symbol in `raws` against the universe `members`. Labels come from the members' composite spread."""
+    """Score every symbol in `raws` against the universe `members`. Labels come from the members' composite spread.
+    clip_pct > 0 clips the quality inputs at that percentile from each end before the universe stats."""
     member_set = {m.upper() for m in members}
-    stats = universe_stats(raws, member_set)
-    scored: dict[str, tuple[Optional[float], list[FactorScore], list[str]]] = {s: _score_one(r, stats, weights, cap) for s, r in raws.items()}
+    stats, bounds = universe_stats(raws, member_set, clip_pct)
+    scored: dict[str, tuple[Optional[float], list[FactorScore], list[str]]] = {s: _score_one(r, stats, weights, cap, bounds) for s, r in raws.items()}
     member_comps = sorted(c for s, (c, _, _) in scored.items() if s in member_set and c is not None)
     n = len(member_comps)
     favorable_min = unfavorable_max = None
@@ -277,9 +316,15 @@ def explain_text(score: Score, universe_name: str = "universe", validity: str = 
                 if c.raw is None:
                     lines.append(f"  {FACTOR_TITLES[part]}: missing ({c.note})")
                 else:
+                    shown = raw_text(part, c.raw)
+                    if "clipped_from" in c.inputs:
+                        shown = f"{raw_text(part, c.inputs['clipped_from'])} clipped to {raw_text(part, c.raw)}"
                     lines.append(
-                        f"  {FACTOR_TITLES[part]} = {raw_text(part, c.raw)}   universe mean {raw_text(part, c.mean)}, std {raw_text(part, c.std)} (n={c.n})   z {_num(c.z)}"
+                        f"  {FACTOR_TITLES[part]} = {shown}   universe mean {raw_text(part, c.mean)}, std {raw_text(part, c.std)} (n={c.n})   z {_num(c.z)}"
                     )
+            any_bounds = next((c.inputs.get("clip_bounds") for c in f.components.values() if c.inputs.get("clip_bounds")), None)
+            if any_bounds is not None:
+                lines.append("  inputs clipped at the universe's 5th and 95th percentile before the mean and std (quant.quality_clip_pct)")
             lines.append(f"  quality z = average of available part z-scores = {_num(f.z)}" + (f"   ({f.note})" if f.note else ""))
         else:
             if f.raw is None:

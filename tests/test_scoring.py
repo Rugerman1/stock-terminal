@@ -1,7 +1,7 @@
 from statistics import mean, stdev
 
 from stock_terminal.quant.factors import FactorValue
-from stock_terminal.quant.scoring import FAVORABLE, NEUTRAL, UNFAVORABLE, RawFactors, explain_text, raw_text, score_all, score_summary
+from stock_terminal.quant.scoring import FAVORABLE, NEUTRAL, UNFAVORABLE, RawFactors, clip_bounds, explain_text, raw_text, score_all, score_summary, universe_stats
 
 WEIGHTS = {"momentum": 0.30, "trend": 0.10, "value": 0.20, "quality": 0.25, "low_risk": 0.10, "news": 0.05}
 
@@ -72,6 +72,27 @@ def test_nothing_scorable_gives_no_composite():
     r = RawFactors("X", None)
     scores = score_all({"X": r}, ["X"], WEIGHTS)
     assert scores["X"].composite is None and scores["X"].label is None and len(scores["X"].notes) == 6
+
+
+def test_quality_inputs_are_clipped_before_the_stats():
+    members = [f"U{i}" for i in range(30)]
+    raws = {m: raw(m, float(i), 10.0 + i) for i, m in enumerate(members)}
+    raws["U29"].quality["roe"] = FactorValue("roe", 575.0)                     # Philip Morris: near-zero equity
+    no_clip = score_all(raws, members, WEIGHTS)
+    clipped = score_all(raws, members, WEIGHTS, clip_pct=5.0)
+    # Without the clip the outlier blows the spread up and everyone else's ROE z collapses toward zero.
+    assert abs(no_clip["U25"].factor("quality").components["roe"].z) < 0.2       # ROE 35 reads as average next to a 575
+    assert abs(clipped["U25"].factor("quality").components["roe"].z) > 1.0       # clipped, it is the strong number it is
+    outlier = clipped["U29"].factor("quality").components["roe"]
+    assert outlier.raw < 575.0 and outlier.inputs["clipped_from"] == 575.0 and "clipped from 575.0%" in outlier.note
+    assert outlier.z == clipped["U28"].factor("quality").components["roe"].z     # both sit at the 95th-percentile bound
+    assert "clipped to" in explain_text(clipped["U29"]) and "5th and 95th percentile" in explain_text(clipped["U29"])
+    assert "clipped" not in explain_text(no_clip["U29"])
+    stats, bounds = universe_stats(raws, set(members), 5.0)
+    assert set(bounds) == {"roe", "gross_margin", "neg_debt_to_equity"} and bounds["roe"][1] < 575.0
+    assert clip_bounds([1.0] * 10, 5.0) is None and clip_bounds(list(range(30)), 0) is None
+    lo, hi = clip_bounds([float(i) for i in range(101)], 5.0)
+    assert lo == 5.0 and hi == 95.0
 
 
 def test_summary_and_explain_text():

@@ -59,6 +59,7 @@ quant:                         # the long-term score (Phase 3) and the options c
   news_halflife_days: 3        # a headline's weight in the news factor = 0.5 ^ (age in days / 3)
   news_min_headlines: 5        # fewer scored DIRECT headlines than this = news factor missing
   news_window_days: 30         # how far back DIRECT headlines count
+  quality_clip_pct: 5          # quality's three inputs are clipped at the universe's 5th and 95th percentile before the stats (0 = off); Tyler's call 2026-11-22
   universe_news: true          # pull Finnhub company news for every universe name so the news factor has a universe to compare with (about 100 calls a night)
   signal_horizon_days: 63      # a long-term label is scored 63 trading days after it is produced (Phase 5)
 
