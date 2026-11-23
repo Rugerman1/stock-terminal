@@ -38,7 +38,11 @@ from ..news.store import NewsStore
 from .factors import low_risk, mean_std, momentum, news_sentiment, quality_components, recent_news_sentiment, return_63, trend, value, vs_50d_average, zscore
 from .options import CALL, CALL_CANDIDATE, NO_TRADE, PUT, PUT_CANDIDATE, DirectionScore, OptionsCheck, OptionsResult, contracts_from_payload
 from .scoring import RawFactors, Score, score_all
+from .backtest import params_for, run_backtest
+from .calendar import Event, load_events
+from .experiments import DeflatedSharpe, deflated_sharpe
 from .signal_scorer import SignalScorer
+from .sizing import Correlation, SizingRow, atr, contracts_for, correlation, shares_for
 from .store import LONG_TERM, OPTIONS, MarketStore
 from .validity import ValidityReport, build_report
 
@@ -61,6 +65,14 @@ class QuantBoard:
     earnings: dict[str, DataPoint] = field(default_factory=dict)      # next earnings date per watchlist ticker
     validity: dict[str, ValidityReport] = field(default_factory=dict) # "long_term" and "options" reports
     scored: list[str] = field(default_factory=list)                   # signals scored this run
+    backtest: Optional[dict[str, Any]] = None                         # the latest backtest, as stored
+    experiments: list[dict[str, Any]] = field(default_factory=list)   # the experiment log
+    dsr: Optional[DeflatedSharpe] = None
+    sizing: list[SizingRow] = field(default_factory=list)
+    account: Optional[float] = None
+    correlation: Optional[Correlation] = None
+    events: list[Event] = field(default_factory=list)
+    calendar_note: str = ""
 
     def validity_text(self, kind: str) -> str:
         report = self.validity.get(kind)
@@ -119,17 +131,21 @@ class QuantEngine:
 
     def refresh_bars(self, symbols: list[str], now: datetime, progress: Progress = None, force: bool = False) -> list[str]:
         """Top up daily closes for the symbols. Returns the symbols whose pull failed."""
-        if not force and self._marker_fresh("quant:bars_checked"):
-            return []
-        history_start = now - timedelta(days=int(self.q["history_days"]))
+        # The daily marker only skips the top-up of names that are already complete; a name that was never pulled, was
+        # pulled before highs and lows were stored, or is not deep enough for the backtest is pulled regardless
+        # (seen live 2026-11-22: the marker hid the three-year re-pull for a whole day).
+        checked_today = not force and self._marker_fresh("quant:bars_checked")
+        history_days = max(int(self.q["history_days"]), int(self.cfg.get("backtest", {}).get("history_days", 0)))
+        history_start = now - timedelta(days=history_days)
         fresh: list[str] = []
         stale: list[str] = []
         oldest_last: Optional[str] = None
         for symbol in symbols:
             last = self.store.last_bar_date(symbol)
-            if last is None:
-                fresh.append(symbol)
-            elif force or last < (now - timedelta(days=1)).date().isoformat():   # force: top up everything
+            first = self.store.first_bar_date(symbol)
+            if last is None or not self.store.has_ranges(symbol) or (first is not None and first > (history_start + timedelta(days=7)).date().isoformat()):
+                fresh.append(symbol)   # never pulled, pulled before highs and lows were stored, or not deep enough for the backtest
+            elif not checked_today and (force or last < (now - timedelta(days=1)).date().isoformat()):   # force: top up everything
                 stale.append(symbol)
                 oldest_last = last if oldest_last is None else min(oldest_last, last)
         failed: list[str] = []
@@ -156,7 +172,7 @@ class QuantEngine:
             if not rows:
                 failed.append(symbol)
                 continue
-            self.store.upsert_bars(symbol, [(r["t"], r["c"]) for r in rows])
+            self.store.upsert_bars(symbol, [(r["t"], r["c"], r.get("h"), r.get("l")) for r in rows])
         return failed
 
     def refresh_metrics(self, symbols: list[str], progress: Progress = None) -> dict[str, DataPoint]:
@@ -260,7 +276,7 @@ class QuantEngine:
         wants_universe_news = bool(self.q["universe_news"]) and self.news_engine is not None and self.finnhub.enabled
         news_due = wants_universe_news and (force or not self._marker_fresh("quant:universe_news"))
 
-        board = self._score(tickers, scorable, members, universe_name, metrics, now, notes, complete=not news_due)
+        board = self._score(tickers, scorable, members, universe_name, metrics, now, notes, complete=not news_due, progress=progress)
         if on_board:
             on_board(board)
         if not news_due:
@@ -275,14 +291,14 @@ class QuantEngine:
             notes.append(f"universe news failed for {len(result['failed'])}: {result['failed'][0]}")
         else:
             self._mark("quant:universe_news")
-        board = self._score(tickers, scorable, members, universe_name, metrics, now, notes, complete=True)
+        board = self._score(tickers, scorable, members, universe_name, metrics, now, notes, complete=True, progress=progress)
         if on_board:
             on_board(board)
         return board
 
     def _score(
         self, tickers: list[str], scorable: list[str], members: list[str], universe_name: str,
-        metrics: dict[str, DataPoint], now: datetime, notes: list[str], complete: bool,
+        metrics: dict[str, DataPoint], now: datetime, notes: list[str], complete: bool, progress: Progress = None,
     ) -> QuantBoard:
         raws = self.raw_factors(scorable, tickers, metrics, now)
         scores = score_all(
@@ -319,6 +335,9 @@ class QuantEngine:
             kind: build_report(kind, scorer.scored(kind), self.store.open_count(kind), self.cfg["validity"], scorer.gap_outcome)
             for kind in (LONG_TERM, OPTIONS)
         }
+        backtest, experiments, dsr = self._backtest(members, now, progress, run=complete)
+        sizing, account, corr = self._sizing(tickers, raws, options)
+        calendar_events, calendar_note = load_events(self.cfg.get("calendar_path", "calendar.yaml"))
         any_score = next(iter(scores.values()), None)
         scored_n = any_score.scored_n if any_score else 0
         as_of = max((s.as_of for s in scores.values() if s.as_of), default=None)
@@ -332,8 +351,64 @@ class QuantEngine:
             scores={t: scores[t] for t in tickers if t in scores},
             universe_name=universe_name, universe_n=len(members), scored_n=scored_n, as_of=as_of, run_at=now,
             status=status, notes=list(notes), signals=events, complete=complete, options=options, earnings=earnings,
-            validity=validity, scored=scored_events,
+            validity=validity, scored=scored_events, backtest=backtest, experiments=experiments, dsr=dsr,
+            sizing=sizing, account=account, correlation=corr, events=calendar_events, calendar_note=calendar_note,
         )
+
+    # ----- the backtest and the experiment log -----
+    def _backtest(self, members: list[str], now: datetime, progress: Progress, run: bool) -> tuple[Optional[dict[str, Any]], list[dict[str, Any]], Optional[DeflatedSharpe]]:
+        b = self.cfg["backtest"]
+        params, digest = params_for(self.cfg)
+        latest = self.store.latest_backtest()
+        current = latest["result"] | {"run_at": latest["run_at"].isoformat() if latest["run_at"] else None, "params_hash": latest["params_hash"]} if latest else None
+        stale = latest is None or latest["params_hash"] != digest or not self._marker_fresh("quant:backtest")
+        if bool(b["enabled"]) and run and stale:
+            if progress:
+                progress("backtest: replaying the price factors")
+            try:
+                result = run_backtest(self.store, members, self.cfg, now.date(), progress, run_at=now)
+            except Exception as exc:  # noqa: BLE001  a backtest bug is a status line, never a crash of the live screen
+                self.log.exception("backtest failed")
+                current = {"signals": 0, "notes": [f"backtest failed: {exc}"]}
+            else:
+                current = result.to_dict() | {"run_at": result.run_at.isoformat(), "params_hash": digest}
+                self.store.save_backtest(now, params, digest, result.to_dict())
+                new_trial = False
+                if result.signals:   # a replay that produced nothing is not a trial
+                    new_trial = self.store.record_experiment(now, digest, params, result.sharpe_per_period, len(result.period_returns), result.skew, result.kurtosis)
+                    self.cache.set("quant:backtest", {"at": now.isoformat()}, float(b["ttl_seconds"]))
+                self.log.info("backtest: %d labels, %d wins, status %s, trial %s%s", result.signals, result.wins, result.report.status if result.report else "-", digest, " (new trial)" if new_trial else "")
+        experiments = self.store.experiments()
+        return current, experiments, deflated_sharpe(experiments, digest)
+
+    # ----- sizing and correlation (display only; never touch a signal) -----
+    def _sizing(self, tickers: list[str], raws: dict[str, RawFactors], options: dict[str, OptionsResult]) -> tuple[list[SizingRow], Optional[float], Optional[Correlation]]:
+        s = self.cfg["sizing"]
+        raw_account = self.store.setting("sizing:account")
+        try:
+            account = float(raw_account) if raw_account else None
+        except ValueError:
+            account = None
+        rows: list[SizingRow] = []
+        for ticker in tickers:
+            raw = raws.get(ticker)
+            price = raw.price if raw else None
+            bars = self.store.bars(ticker, int(s["atr_sessions"]) + 5)
+            a = atr(bars, int(s["atr_sessions"]))
+            note = "" if a is not None else f"ATR needs {int(s['atr_sessions']) + 1} sessions with highs and lows"
+            result = options.get(ticker)
+            ask = result.contract.ask if result is not None and result.contract is not None else None
+            stop = float(s["atr_multiple"]) * a if a is not None else None
+            rows.append(SizingRow(
+                ticker=ticker, price=price, atr=a, stop_distance=stop,
+                shares=shares_for(account, float(s["risk_pct"]), a, float(s["atr_multiple"])) if account else None,
+                ask=ask, contracts=contracts_for(account, float(s["risk_pct"]), ask) if account else None, note=note,
+            ))
+        corr = correlation(self.store.closes_many(tickers, int(s["correlation_sessions"]) + 10), int(s["correlation_sessions"]), float(s["correlation_warn"])) if len(tickers) >= 2 else None
+        return rows, account, corr
+
+    def set_account(self, value: float) -> None:
+        self.store.set_setting("sizing:account", f"{float(value):.2f}")
 
     # ----- the options check -----
     def _direction_stats(self, raws: dict[str, RawFactors], members: set[str]) -> dict[str, tuple[Optional[float], Optional[float], int]]:

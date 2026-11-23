@@ -78,6 +78,25 @@ options:                       # the call / put check (Phase 4). Read-only: quot
   news_days: 7                 # the direction score's news component uses DIRECT headlines this recent
   news_min_headlines: 3        # fewer than this and the news component is missing
 
+backtest:                      # the walk-forward backtest (Phase 6): the price factors replayed on past closes, fed to the same three tests
+  enabled: true
+  history_days: 1100           # about three years of daily closes pulled for every universe name
+  step_sessions: 63            # re-score the universe every 63 sessions (a quarter), so holding periods do not overlap
+  horizon_sessions: 63         # each replayed label is scored 63 sessions later against SPY
+  min_history_sessions: 253    # the first replay date needs a year of closes behind it (momentum)
+  ttl_seconds: 86400           # rerun once a day
+  replay_news: false           # Alpaca's news history is press releases only and would take hours to score; left out and said so on screen
+
+sizing:                        # the position sizing panel (Phase 6, book p. 65). Display only: it never touches a signal.
+  risk_pct: 1.0                # the share of the account one stop may lose
+  atr_sessions: 14             # the average true range is the simple mean of the true range over this many sessions
+  atr_multiple: 2.0            # the stop sits this many ATRs away
+  correlation_sessions: 90     # the watchlist correlation table uses this many daily returns
+  correlation_warn: 0.8        # two holdings above this get a warning
+
+calendar_path: calendar.yaml   # hand-kept Fed and CPI dates (Finnhub's economic calendar is premium)
+brief_dir: briefs              # where the b key and --brief write today's markdown summary
+
 validity:                      # the honesty check (Phase 5), Berdondini pp. 36-42 and 51-58
   min_signals: 30              # fewer scored signals than this = UNPROVEN
   window: 50                   # the tests run on the newest 50 scored signals

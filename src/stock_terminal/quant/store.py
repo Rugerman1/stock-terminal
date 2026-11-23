@@ -66,6 +66,29 @@ SCHEMA = (
         PRIMARY KEY (symbol, date)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS backtests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_at TEXT NOT NULL,
+        params TEXT NOT NULL,
+        params_hash TEXT NOT NULL,
+        result TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS experiments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        params_hash TEXT NOT NULL UNIQUE,
+        params TEXT NOT NULL,
+        sharpe REAL,
+        n_returns INTEGER,
+        skew REAL,
+        kurtosis REAL,
+        note TEXT
+    )
+    """,
+    "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)",
 )
 
 LONG_TERM = "long_term"
@@ -110,6 +133,10 @@ class MarketStore:
             for name, kind in self.SIGNAL_COLUMNS:
                 if name not in present:
                     con.execute(f"ALTER TABLE signals ADD COLUMN {name} {kind}")
+            bars = {row["name"] for row in con.execute("PRAGMA table_info(daily_bars)").fetchall()}
+            for name in ("high", "low"):
+                if name not in bars:
+                    con.execute(f"ALTER TABLE daily_bars ADD COLUMN {name} REAL")
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=10)
@@ -117,14 +144,38 @@ class MarketStore:
         return con
 
     # ----- daily bars -----
-    def upsert_bars(self, symbol: str, rows: Iterable[tuple[str, float]]) -> int:
-        """rows: (date 'YYYY-MM-DD', close). Returns how many rows were written."""
-        data = [(symbol.upper(), d, float(c)) for d, c in rows]
+    def upsert_bars(self, symbol: str, rows: Iterable[tuple]) -> int:
+        """rows: (date 'YYYY-MM-DD', close) or (date, close, high, low). Returns how many rows were written."""
+        data = []
+        for row in rows:
+            d, c = row[0], float(row[1])
+            high = float(row[2]) if len(row) > 2 and row[2] is not None else None
+            low = float(row[3]) if len(row) > 3 and row[3] is not None else None
+            data.append((symbol.upper(), d, c, high, low))
         if not data:
             return 0
         with self._lock, self._connect() as con:
-            con.executemany("INSERT OR REPLACE INTO daily_bars (symbol, date, close) VALUES (?, ?, ?)", data)
+            con.executemany("INSERT OR REPLACE INTO daily_bars (symbol, date, close, high, low) VALUES (?, ?, ?, ?, ?)", data)
         return len(data)
+
+    def has_ranges(self, symbol: str) -> bool:
+        """True when the newest stored bar carries a high and a low (needed for the ATR in the sizing panel)."""
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT high, low FROM daily_bars WHERE symbol = ? ORDER BY date DESC LIMIT 1", (symbol.upper(),)).fetchone()
+        return bool(row and row["high"] is not None and row["low"] is not None)
+
+    def bars(self, symbol: str, limit: int = 400) -> list[tuple[str, float, Optional[float], Optional[float]]]:
+        """(date, close, high, low), oldest first."""
+        with self._lock, self._connect() as con:
+            rows = con.execute(
+                "SELECT date, close, high, low FROM daily_bars WHERE symbol = ? ORDER BY date DESC LIMIT ?", (symbol.upper(), limit)
+            ).fetchall()
+        return [(r["date"], float(r["close"]), r["high"], r["low"]) for r in reversed(rows)]
+
+    def first_bar_date(self, symbol: str) -> Optional[str]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT MIN(date) FROM daily_bars WHERE symbol = ?", (symbol.upper(),)).fetchone()
+        return row[0] if row and row[0] else None
 
     def last_bar_date(self, symbol: str) -> Optional[str]:
         with self._lock, self._connect() as con:
@@ -286,6 +337,45 @@ class MarketStore:
         with self._lock, self._connect() as con:
             rows = con.execute(sql, params).fetchall()
         return [self._signal(r) for r in rows]
+
+    # ----- backtests, experiments, settings -----
+    def save_backtest(self, run_at: datetime, params: dict[str, Any], params_hash: str, result: dict[str, Any]) -> int:
+        with self._lock, self._connect() as con:
+            cur = con.execute("INSERT INTO backtests (run_at, params, params_hash, result) VALUES (?, ?, ?, ?)", (iso(run_at), json.dumps(params, sort_keys=True), params_hash, json.dumps(result)))
+            return int(cur.lastrowid)
+
+    def latest_backtest(self) -> Optional[dict[str, Any]]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT * FROM backtests ORDER BY id DESC LIMIT 1").fetchone()
+        if row is None:
+            return None
+        return {"id": row["id"], "run_at": parse_when(row["run_at"]), "params": json.loads(row["params"]), "params_hash": row["params_hash"], "result": json.loads(row["result"])}
+
+    def record_experiment(self, at: datetime, params_hash: str, params: dict[str, Any], sharpe: Optional[float], n_returns: int, skew: Optional[float], kurtosis: Optional[float], note: str = "") -> bool:
+        """One row per distinct parameter set. Returns True when this set is new (the trial counter went up)."""
+        with self._lock, self._connect() as con:
+            cur = con.execute(
+                "INSERT OR IGNORE INTO experiments (at, params_hash, params, sharpe, n_returns, skew, kurtosis, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (iso(at), params_hash, json.dumps(params, sort_keys=True), sharpe, n_returns, skew, kurtosis, note),
+            )
+            if cur.rowcount == 0:
+                con.execute("UPDATE experiments SET sharpe = ?, n_returns = ?, skew = ?, kurtosis = ? WHERE params_hash = ?", (sharpe, n_returns, skew, kurtosis, params_hash))
+                return False
+            return True
+
+    def experiments(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as con:
+            rows = con.execute("SELECT * FROM experiments ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._lock, self._connect() as con:
+            con.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
 
     @staticmethod
     def _signal(row: sqlite3.Row) -> Signal:

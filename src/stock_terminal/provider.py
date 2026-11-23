@@ -65,6 +65,8 @@ class Provider(Protocol):
         force: bool = False,
     ) -> QuantBoard: ...
 
+    def set_account(self, value: float) -> None: ...
+
 
 class LiveProvider:
     def __init__(self, cfg: dict[str, Any], keys: Keys, cache: Cache, logger: Optional[logging.Logger] = None) -> None:
@@ -101,3 +103,6 @@ class LiveProvider:
 
     def peers(self, ticker: str) -> DataPoint:
         return self.finnhub.peers(ticker)
+
+    def set_account(self, value: float) -> None:
+        self.quant.set_account(value)

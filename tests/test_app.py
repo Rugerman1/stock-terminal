@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import date, timedelta
 
 from textual.widgets import DataTable, ListView, Static
 
@@ -53,6 +53,9 @@ class FakeProvider:
         )
         return Board(quotes=quotes, fred=fred, clock=clock)
 
+    def set_account(self, value):
+        self.account = value
+
     def refresh_quant(self, tickers, on_board=None, progress=None, force=False):
         self.quant_calls.append(list(tickers))
         if progress:
@@ -76,7 +79,18 @@ class FakeProvider:
         else:
             lt_report = ValidityReport("long_term", "UNPROVEN", 3, 2, 30, 50, binomial=VTestResult(3, 2, 0.5, 0.5), notes=[])
         validity = {"long_term": lt_report, "options": ValidityReport("options", "UNPROVEN", 0, 1, 30, 50, notes=["no scored signals yet"])}
-        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"], options={"AAPL": options} if "AAPL" in tickers else {}, earnings=earnings if "AAPL" in tickers else {}, validity=validity, scored=["AAPL long_term Favorable 2026-08-01 to 2026-11-02: win (vs SPY)"] if "AAPL" in tickers else [])
+        from stock_terminal.quant.calendar import Event
+        from stock_terminal.quant.sizing import SizingRow
+        from stock_terminal.quant.experiments import DeflatedSharpe
+        extras = dict(
+            backtest={"start": "2024-01-02", "end": "2026-11-20", "rebalances": 10, "signals": 300, "wins": 170, "status": "WEAK EVIDENCE", "binomial": {"n": 300, "k": 170, "p": 0.012}, "binomial_empirical": {"p": 0.2, "baseline": 0.52}, "monte_carlo": {"p": 0.03, "note": "10,000 runs"}, "bef_tickers": 8, "bef_significant": 2, "sharpe": 0.8, "sharpe_per_period": 0.4, "skew": 0.1, "kurtosis": 3.1, "excluded": {"value": "not point-in-time"}, "notes": ["survivorship bias"], "run_at": "2026-11-22T22:00:00", "params_hash": "abc123"},
+            experiments=[{"params_hash": "abc123", "sharpe": 0.4, "n_returns": 10, "skew": 0.1, "kurtosis": 3.1, "at": "2026-11-22T22:00"}],
+            dsr=DeflatedSharpe(1, 0.4, None, None, 10, "needs two or more trials"),
+            sizing=[SizingRow("AAPL", 343.4, 8.2, 16.4, 15 if getattr(self, "account", None) else None, 12.3, 0 if getattr(self, "account", None) else None)],
+            account=getattr(self, "account", None),
+            events=[Event(date(2026, 12, 8), "FOMC", date(2026, 12, 9), "fed")],
+        )
+        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"], options={"AAPL": options} if "AAPL" in tickers else {}, earnings=earnings if "AAPL" in tickers else {}, validity=validity, scored=["AAPL long_term Favorable 2026-08-01 to 2026-11-02: win (vs SPY)"] if "AAPL" in tickers else [], **extras)
         if on_board:
             on_board(board)
         return board
@@ -217,6 +231,31 @@ async def test_random_like_shows_the_banner_and_greys_the_labels(tmp_path, cfg):
         cell = table.get_row_at(0)[3]
         assert isinstance(cell, Text) and str(cell) == "FAV" and "dim" in str(cell.style)
         assert "Virtual mode" in app.validity_text
+
+
+async def test_size_tab_dates_strip_and_brief(tmp_path, cfg):
+    from textual.widgets import Input
+    cfg["brief_dir"] = str(tmp_path / "briefs")
+    provider = FakeProvider()
+    app, _ = make_app(tmp_path, cfg, provider)
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(app, pilot)
+        assert "Dates: FOMC Dec 8-9" in app.strip_text and "AAPL earnings Jan 27" in app.strip_text
+        assert "2024-01-02 to 2026-11-20" in app.validity_text and "Experiment log[/]: 1 trial" in app.validity_text
+        assert "Enter an account size" in app.sizing_text
+        field = app.query_one("#account-input", Input)
+        field.focus()
+        await pilot.pause()
+        await pilot.press("2", "5", "0", "0", "0", "enter")
+        await settle(app, pilot)
+        assert provider.account == 25000.0 and "account $25,000" in app.sizing_text and provider.quant_calls[-1] == ["AAPL", "MSFT"]
+        await pilot.press("escape")
+        app.query_one("#watchlist", DataTable).focus()
+        await pilot.pause()
+        await pilot.press("b")
+        await pilot.pause()
+        files = list((tmp_path / "briefs").glob("*.md"))
+        assert len(files) == 1 and "# Watchlist brief" in files[0].read_text(encoding="utf-8") and "## AAPL" in files[0].read_text(encoding="utf-8")
 
 
 async def test_add_and_delete_keys(tmp_path, cfg):

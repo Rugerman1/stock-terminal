@@ -1,0 +1,33 @@
+# Fed and CPI dates for the dates strip. Finnhub's economic calendar is a paid tier, so these are kept by hand.
+# Rule: only dates read from the source page go in, with the page and the day they were read. Nothing from memory.
+#
+# FOMC: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm (read 2026-11-22, page last updated 2026-11-18;
+#       the 2026 and 2027 tables verbatim). The page says each 2027 date is tentative until confirmed at the meeting before it,
+#       and that a meeting is scheduled for January 25-26, 2028.
+# CPI:  https://www.bls.gov/schedule/news_release/cpi.htm (read 2026-11-22; releases at 8:30 AM ET).
+#
+# Each entry: date (first day), optional end (second day of a two-day meeting), name, source.
+
+events:
+  - {date: 2026-12-08, end: 2026-12-09, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22)}
+  - {date: 2026-12-10, name: CPI (Nov), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-01-26, end: 2027-01-27, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-03-16, end: 2027-03-17, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-04-27, end: 2027-04-28, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-06-08, end: 2027-06-09, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-07-27, end: 2027-07-28, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-09-14, end: 2027-09-15, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-10-26, end: 2027-10-27, name: FOMC (Monetary Policy Strategy Meeting), source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-11-16, end: 2027-11-17, name: FOMC, source: federalreserve.gov fomccalendars (read 2026-11-22, tentative)}
+  - {date: 2027-01-13, name: CPI (Dec), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-02-11, name: CPI (Jan), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-03-10, name: CPI (Feb), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-04-13, name: CPI (Mar), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-05-12, name: CPI (Apr), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-06-10, name: CPI (May), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-07-14, name: CPI (Jun), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-08-11, name: CPI (Jul), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-09-14, name: CPI (Aug), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-10-14, name: CPI (Sep), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-11-10, name: CPI (Oct), source: bls.gov cpi schedule (read 2026-11-22)}
+  - {date: 2027-12-10, name: CPI (Nov), source: bls.gov cpi schedule (read 2026-11-22)}

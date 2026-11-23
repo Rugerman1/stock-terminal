@@ -36,7 +36,8 @@ class FakeAlpaca:
             i = 0
             while day <= end.date():
                 if day.weekday() < 5:
-                    rows.append({"t": day.isoformat(), "c": 100.0 * growth ** i})
+                    close = 100.0 * growth ** i
+                    rows.append({"t": day.isoformat(), "c": close, "h": close * 1.01, "l": close * 0.99})
                     i += 1
                 day += timedelta(days=1)
             out[s] = rows
@@ -83,6 +84,9 @@ def make(tmp_path, cfg, cache, universe_news=False, news_engine=None, alpaca=Non
     cfg["quant"]["universe_path"] = str(path)
     cfg["quant"]["universe_news"] = universe_news
     cfg["options"]["enabled"] = options
+    cfg["backtest"].setdefault("history_days", 1100)
+    if cfg["backtest"]["history_days"] == 1100:
+        cfg["backtest"]["history_days"] = 400   # the toy universe compounds; the backtest test sets its own depth
     market = MarketStore(tmp_path / "m.db")
     news = NewsStore(tmp_path / "n.db")
     engine = QuantEngine(cfg, market, news, news_engine, alpaca or FakeAlpaca(), finnhub or FakeFinnhub(), cache, fred=fred)
@@ -227,3 +231,25 @@ def test_validity_reports_ride_on_the_board(tmp_path, cfg, cache):
     board = engine.refresh(["AAPL"], now=NOW + timedelta(hours=1))
     assert len(board.scored) == 1 and "U1 long_term Favorable" in board.scored[0] and "horizon" in board.scored[0]
     assert board.validity["long_term"].n_scored == 1 and board.validity_text("long_term") == "UNPROVEN 1/30"
+
+
+def test_backtest_sizing_and_calendar_ride_on_the_board(tmp_path, cfg, cache):
+    from conftest import REPO_ROOT
+    cfg["calendar_path"] = str(REPO_ROOT / "calendar.yaml")
+    engine, market, _ = make(tmp_path, cfg, cache, options=True, fred=FakeFred(), alpaca=FakeOptionsAlpaca())
+    cfg["backtest"]["history_days"] = 1100
+    progress = []
+    board = engine.refresh(["AAPL", "U0"], now=NOW, progress=progress.append)
+    assert board.backtest is not None and board.backtest["signals"] > 0 and board.backtest["rebalances"] >= 4
+    assert any(p.startswith("backtest") for p in progress)
+    assert len(board.experiments) == 1 and board.dsr is not None and board.dsr.n_trials == 1 and "two or more" in board.dsr.note
+    assert [r.ticker for r in board.sizing] == ["AAPL", "U0"] and board.sizing[0].atr is not None and board.sizing[0].shares is None   # no account yet
+    assert board.correlation is not None and board.correlation.sessions == 90
+    assert board.events and board.events[0].name == "FOMC" and board.calendar_note == ""
+    engine.set_account(25000)
+    board2 = engine.refresh(["AAPL", "U0"], now=NOW + timedelta(minutes=5))
+    assert board2.account == 25000.0 and board2.sizing[0].shares is not None and board2.sizing[0].contracts is not None
+    assert board2.backtest["run_at"] == board.backtest["run_at"]            # cached for a day, not rerun
+    cfg["quant"]["weights"]["momentum"] = 0.35                               # a changed weight is a new trial
+    board3 = engine.refresh(["AAPL", "U0"], now=NOW + timedelta(minutes=10))
+    assert len(board3.experiments) == 2 and board3.dsr.n_trials == 2 and board3.dsr.sr0 is not None

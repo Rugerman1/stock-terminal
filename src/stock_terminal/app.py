@@ -48,6 +48,11 @@ from .quant.options import options_explain, options_summary
 from .quant.scoring import explain_text, score_summary
 from .quant.store import LONG_TERM, OPTIONS
 from .quant.validity import validity_explain, validity_summary
+from .quant.backtest import backtest_summary
+from .quant.brief import build_brief, write_brief
+from .quant.calendar import dates_strip
+from .quant.experiments import experiments_summary
+from .quant.sizing import sizing_summary
 from rich.text import Text
 from .relationships import catalyst_label
 from .watchlist import Watchlist
@@ -170,6 +175,7 @@ class StockTerminalApp(App[None]):
         Binding("f", "cycle_filter", "Filter"),
         Binding("o", "open_link", "Open"),
         Binding("question_mark", "explain", "Explain", key_display="?"),
+        Binding("b", "brief", "Brief"),
         Binding("l", "toggle_log", "Log"),
         Binding("q", "quit", "Quit"),
     ]
@@ -198,6 +204,7 @@ class StockTerminalApp(App[None]):
         self.score_text = ""
         self.options_text = ""
         self.validity_text = ""
+        self.sizing_text = ""
         self.shown_entries: list[FeedEntry] = []
         self.strip_text = "Loading..."
         self._log_lines: Deque[str] = deque(maxlen=500)
@@ -223,6 +230,11 @@ class StockTerminalApp(App[None]):
                 with TabPane("Validity", id="tab-validity"):
                     with VerticalScroll():
                         yield Static("Validity: loading...", id="validity-pane")
+                with TabPane("Size", id="tab-size"):
+                    with Vertical():
+                        yield Input(placeholder="account size in dollars, then Enter (e.g. 25000)", id="account-input")
+                        with VerticalScroll():
+                            yield Static("Sizing: loading...", id="size-pane")
         with Collapsible(title="Log (l to toggle)", collapsed=True, id="log-panel"):
             yield RichLog(id="log", max_lines=500, wrap=True, markup=False)
         yield Footer()
@@ -318,9 +330,11 @@ class StockTerminalApp(App[None]):
         for event in quant_board.scored:
             self.notify(event, title="Signal scored")
         self._render_banner()
+        self._render_top_strip()
         self._render_table()
         self._render_score()
         self._render_validity()
+        self._render_sizing()
 
     def set_quant_status(self, text: str) -> None:
         self.quant_status = text
@@ -365,6 +379,8 @@ class StockTerminalApp(App[None]):
         refreshed = f"Refreshed {fmt_time_ny(board.refreshed_at)}" if board else ""
         line2 = " | ".join(p for p in (status, delay, missing, refreshed, LEGEND) if p)
         self.strip_text = f"{line1}\n{line2}"
+        if self.quant_board is not None:
+            self.strip_text += "\n" + dates_strip(self.quant_board.events, self.quant_board.earnings, utcnow().date(), note=self.quant_board.calendar_note)
         self.query_one("#top-strip", Static).update(self.strip_text)
 
     def _selected_ticker(self) -> Optional[str]:
@@ -518,9 +534,42 @@ class StockTerminalApp(App[None]):
         if board is None:
             self.validity_text = "Validity: loading..."
         else:
-            parts = [validity_summary(board.validity.get(LONG_TERM)), "", validity_summary(board.validity.get(OPTIONS)), "", validity_explain()]
+            parts = [
+                validity_summary(board.validity.get(LONG_TERM)), "", validity_summary(board.validity.get(OPTIONS)), "",
+                backtest_summary(board.backtest), "",
+                experiments_summary(board.experiments, board.dsr) if board.dsr is not None else "", "",
+                validity_explain(),
+            ]
             self.validity_text = "\n".join(parts)
         self.query_one("#validity-pane", Static).update(self.validity_text)
+
+    def _render_sizing(self) -> None:
+        board = self.quant_board
+        if board is None:
+            self.sizing_text = "Sizing: loading..."
+        else:
+            self.sizing_text = sizing_summary(board.account, board.sizing, board.correlation, self.cfg["sizing"])
+            field = self.query_one("#account-input", Input)
+            if board.account and not field.value:
+                field.value = f"{board.account:.0f}"
+        self.query_one("#size-pane", Static).update(self.sizing_text)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "account-input":
+            return
+        text = event.value.replace(",", "").replace("$", "").strip()
+        try:
+            value = float(text)
+        except ValueError:
+            self.notify(f"Not a number: {event.value!r}", severity="warning")
+            return
+        if value <= 0:
+            self.notify("Account size must be positive", severity="warning")
+            return
+        self.provider.set_account(value)
+        self.logger.info("account size set to %.2f", value)
+        self.notify(f"Account size ${value:,.0f} saved; sizing refreshes")
+        self.refresh_quant()
 
     # ----- actions -----
     def action_add_ticker(self) -> None:
@@ -586,3 +635,13 @@ class StockTerminalApp(App[None]):
     def action_toggle_log(self) -> None:
         panel = self.query_one("#log-panel", Collapsible)
         panel.collapsed = not panel.collapsed
+
+    def action_brief(self) -> None:
+        now = utcnow()
+        dates_line = ""
+        if self.quant_board is not None:
+            dates_line = dates_strip(self.quant_board.events, self.quant_board.earnings, now.date(), note=self.quant_board.calendar_note)
+        text = build_brief(self.cfg, self.board, self.news_board, self.quant_board, now, dates_line)
+        path = write_brief(self.cfg.get("brief_dir", "briefs"), text, now)
+        self.logger.info("brief written to %s", path)
+        self.notify(f"Brief written: {path}", title="Brief")

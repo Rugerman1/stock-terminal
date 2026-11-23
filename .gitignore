@@ -21,3 +21,4 @@ Thumbs.db
 
 # pytest
 .pytest_cache/
+briefs/

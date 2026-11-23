@@ -90,6 +90,24 @@ DEFAULTS: dict[str, Any] = {
         "news_days": 7,
         "news_min_headlines": 3,
     },
+    "backtest": {
+        "enabled": True,
+        "history_days": 1100,
+        "step_sessions": 63,
+        "horizon_sessions": 63,
+        "min_history_sessions": 253,
+        "ttl_seconds": 86400,
+        "replay_news": False,
+    },
+    "sizing": {
+        "risk_pct": 1.0,
+        "atr_sessions": 14,
+        "atr_multiple": 2.0,
+        "correlation_sessions": 90,
+        "correlation_warn": 0.8,
+    },
+    "calendar_path": "calendar.yaml",
+    "brief_dir": "briefs",
     "validity": {
         "min_signals": 30,
         "window": 50,
@@ -191,6 +209,13 @@ def validate(cfg: Mapping[str, Any]) -> None:
         raise ConfigError("options.rate_series must be a FRED series id")
     for name in ("min_signals", "window", "random_like_above", "significant_below", "monte_carlo_runs"):
         _positive(cfg, "validity", name)
+    for name in ("history_days", "step_sessions", "horizon_sessions", "min_history_sessions", "ttl_seconds"):
+        _positive(cfg, "backtest", name)
+    for name in ("risk_pct", "atr_sessions", "atr_multiple", "correlation_sessions", "correlation_warn"):
+        _positive(cfg, "sizing", name)
+    for name in ("enabled", "replay_news"):
+        if not isinstance(cfg["backtest"][name], bool):
+            raise ConfigError(f"backtest.{name} must be true or false")
     if not 0 < cfg["validity"]["significant_below"] < cfg["validity"]["random_like_above"] < 1:
         raise ConfigError("validity.significant_below must be below validity.random_like_above, both between 0 and 1")
     equities = cfg["top_strip"]["equities"]

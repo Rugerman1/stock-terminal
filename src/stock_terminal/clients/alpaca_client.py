@@ -203,7 +203,7 @@ class AlpacaClient(BaseClient):
 
     # ----- daily closes for many symbols (the score's universe) -----
     def daily_closes(self, symbols: list[str], start: datetime, end: datetime) -> DataPoint:
-        """Split-adjusted daily closes: {symbol: [{"t": date, "c": close}]}. Requests of 25 symbols; alpaca-py pages each."""
+        """Split-adjusted daily bars: {symbol: [{"t": date, "c": close, "h": high, "l": low}]}. Requests of 25 symbols; alpaca-py pages each."""
         wanted = sorted({s.upper() for s in symbols if s})
         source = f"{self.source}/daily"
         if not wanted:
@@ -229,7 +229,11 @@ class AlpacaClient(BaseClient):
             data = getattr(result, "data", result)
             for symbol in chunk:
                 rows = data.get(symbol, []) if hasattr(data, "get") else []
-                out[symbol] = [{"t": bar.timestamp.date().isoformat(), "c": float(bar.close)} for bar in rows]
+                out[symbol] = [
+                    {"t": bar.timestamp.date().isoformat(), "c": float(bar.close),
+                     "h": float(bar.high) if getattr(bar, "high", None) is not None else None, "l": float(bar.low) if getattr(bar, "low", None) is not None else None}
+                    for bar in rows
+                ]
         return out
 
     # ----- options: the contract list (read-only GET on the trading API) and the chain snapshots -----

@@ -10,6 +10,9 @@
     python -m stock_terminal --universe      pull the universe's closes, fundamentals and news now (the nightly job)
     python -m stock_terminal --signals       print the signal log (label changes)
     python -m stock_terminal --validity      score due signals and print the three validity tests
+    python -m stock_terminal --backtest      run or show the walk-forward backtest and the experiment log
+    python -m stock_terminal --brief         write today's watchlist brief to the briefs folder
+    python -m stock_terminal --size 25000    set the account size and print the sizing panel
     python -m stock_terminal --rededupe      recompute the duplicate marks after a rule change
 
 Paths in config.yaml are relative to the folder you run from, so run from the repo root.
@@ -31,6 +34,12 @@ from .quant.engine import QuantBoard
 from .quant.options import options_explain, options_summary
 from .quant.store import LONG_TERM, OPTIONS
 from .quant.validity import validity_explain, validity_summary
+from .quant.backtest import backtest_summary
+from .quant.brief import build_brief, write_brief
+from .quant.calendar import dates_strip
+from .quant.experiments import experiments_summary
+from .quant.sizing import sizing_summary
+from .datapoint import utcnow
 from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label, peers_snippet
 from .watchlist import Watchlist
@@ -50,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--universe", action="store_true", help="refresh the universe's closes, fundamentals and news now")
     parser.add_argument("--signals", action="store_true", help="print the signal log")
     parser.add_argument("--validity", action="store_true", help="score due signals and print the three validity tests")
+    parser.add_argument("--backtest", action="store_true", help="run or show the walk-forward backtest and the experiment log")
+    parser.add_argument("--brief", action="store_true", help="write today's watchlist brief to the briefs folder")
+    parser.add_argument("--size", metavar="DOLLARS", type=float, help="set the account size and print the sizing panel")
     parser.add_argument("--rededupe", action="store_true", help="recompute every duplicate mark in the news store with the current rule")
     parser.add_argument("--config", default="config.yaml", help="settings file (default: config.yaml)")
     parser.add_argument("--watchlist", default="watchlist.yaml", help="watchlist file (default: watchlist.yaml)")
@@ -118,6 +130,11 @@ def print_quant_status(board: QuantBoard, tickers: list[str]) -> None:
         print("\nValidity:")
         for kind, report in board.validity.items():
             print(f"  {kind:<10} {report.column_text:<16} {report.n_scored} scored, {report.n_open} open" + (f", binomial P {report.binomial.probability * 100:.2f}%" if report.binomial.probability is not None else ""))
+    if board.backtest:
+        d = board.backtest
+        print(f"  backtest   {d.get('status') or '--':<16} {d.get('signals', 0)} replayed labels, {d.get('wins', 0)} wins, {d.get('rebalances', 0)} rebalances" + (f", Sharpe {d['sharpe']:+.2f}" if d.get("sharpe") is not None else ""))
+    if board.events or board.calendar_note:
+        print("\n" + dates_strip(board.events, board.earnings, utcnow().date(), note=board.calendar_note))
 
 
 def run_check(cfg: dict[str, Any], keys: Keys, provider: Provider, watchlist: Watchlist) -> int:
@@ -226,6 +243,40 @@ def run_validity(provider: Provider, watchlist: Watchlist) -> int:
     return 0
 
 
+def run_backtest_cmd(provider: Provider, watchlist: Watchlist) -> int:
+    board = provider.refresh_quant(list(watchlist.tickers), progress=_progress)
+    print()
+    print(_plain(backtest_summary(board.backtest)))
+    print()
+    if board.dsr is not None:
+        print(_plain(experiments_summary(board.experiments, board.dsr)))
+    return 0
+
+
+def run_brief(cfg: dict[str, Any], provider: Provider, watchlist: Watchlist) -> int:
+    tickers = list(watchlist.tickers)
+    symbols = list(dict.fromkeys(list(cfg["top_strip"]["equities"]) + tickers))
+    board = provider.refresh(symbols)
+    news_board = provider.refresh_news(tickers)
+    quant_board = provider.refresh_quant(tickers, progress=_progress)
+    now = utcnow()
+    dates_line = dates_strip(quant_board.events, quant_board.earnings, now.date(), note=quant_board.calendar_note)
+    path = write_brief(cfg.get("brief_dir", "briefs"), build_brief(cfg, board, news_board, quant_board, now, dates_line), now)
+    print(f"brief written: {path}")
+    return 0
+
+
+def run_size(cfg: dict[str, Any], provider: Any, watchlist: Watchlist, dollars: float) -> int:
+    if dollars <= 0:
+        print("account size must be positive")
+        return 1
+    provider.set_account(dollars)
+    board = provider.refresh_quant(list(watchlist.tickers), progress=_progress)
+    print()
+    print(_plain(sizing_summary(board.account, board.sizing, board.correlation, cfg["sizing"])))
+    return 0
+
+
 def run_universe(provider: Provider, watchlist: Watchlist) -> int:
     board = provider.refresh_quant(list(watchlist.tickers), progress=_progress, force=True)
     print_quant_status(board, list(watchlist.tickers))
@@ -306,6 +357,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_signals(provider)
     if args.validity:
         return run_validity(provider, watchlist)
+    if args.backtest:
+        return run_backtest_cmd(provider, watchlist)
+    if args.brief:
+        return run_brief(cfg, provider, watchlist)
+    if args.size is not None:
+        return run_size(cfg, provider, watchlist, args.size)
     if args.rededupe:
         originals, duplicates = provider.store.rededupe()
         print(f"news store re-deduplicated: {originals} originals, {duplicates} duplicates")

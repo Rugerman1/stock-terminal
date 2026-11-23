@@ -20,7 +20,7 @@ validity status. The full spec is in [docs/SPEC.md](docs/SPEC.md).
 | 3 | Long-term score: six factors as z-scores against the S&P 100, Favorable / Neutral / Unfavorable, the `?` explain view, the signal log | **Built 2026-11-22.** |
 | 4 | Options check: direction score, contract pick on the indicative feed, HV and IV, vol ratio, IV rank collection, expected move, breakeven, two probabilities of profit, simulated expected value, max loss, Greeks, Call / Put candidate or No trade with the failed check named, earnings warning, options signal log | **Built 2026-11-22.** |
 | 5 | Signal scoring at the horizon (beat SPY, or beyond breakeven), the binomial test at 50 percent and at the universe's rate, Monte Carlo, the Binomial Evolution Function per ticker, UNPROVEN / RANDOM-LIKE / WEAK EVIDENCE / SIGNIFICANT everywhere a label shows, the virtual-mode banner, `--validity` | **Built 2026-11-22.** Reads UNPROVEN until 30 signals are scored, which takes months by design. |
-| 6 | Backtest, experiment log, sizing panel, extras | Not started |
+| 6 | Walk-forward backtest on the price factors feeding the same three tests, experiment log with the Deflated Sharpe Ratio, position sizing panel, watchlist correlation table, Fed / CPI / earnings dates strip, `b` brief, `--backtest`, `--size`, `--brief` | **Built 2026-11-22.** |
 
 ## Run it
 
@@ -55,6 +55,9 @@ signal log:
 .venv\Scripts\python -m stock_terminal --universe
 .venv\Scripts\python -m stock_terminal --signals
 .venv\Scripts\python -m stock_terminal --validity
+.venv\Scripts\python -m stock_terminal --backtest
+.venv\Scripts\python -m stock_terminal --size 25000
+.venv\Scripts\python -m stock_terminal --brief
 ```
 
 Recompute the news store's duplicate marks after changing the dedupe rule in `config.yaml`:
@@ -119,6 +122,7 @@ Market CLOSED, opens Mon Nov 23 9:30 AM ET | Newest IEX trade 2d ago | Refreshed
 | `f` | cycle the news filter: ALL, DIRECT, PEER, SECTOR, MACRO, FILING |
 | `o` | open the highlighted headline in the browser (Tab into the news list, arrows to pick one) |
 | `?` | explain view for the highlighted ticker: the score and the options check, every formula, input and source (Esc closes) |
+| `b` | write today's brief, a markdown summary of the whole screen, to the `briefs` folder |
 | `l` | show or hide the log panel |
 | `q` | quit |
 
@@ -288,6 +292,42 @@ The headline probability is the pooled binomial at 50 percent; the other tests s
 `config.yaml`'s `validity:` block. The spec's binomial values (16.6, 5.7 and 1.7 percent behind at p = 0.6 after 10, 50
 and 100; 48.3 percent; 0.00025 percent) are pinned by tests to the digit.
 
+## The backtest and the experiment log
+
+The Validity tab's third block is the **walk-forward backtest**: every 63 sessions over about three years of stored
+closes, the universe is scored with the closes known on that date only, using the price factors (momentum, trend, low
+risk). Value and quality are left out because free fundamentals are not point-in-time (today's figures would leak into
+the past), and news is left out because Alpaca's history is press releases only and would take hours to score; both
+reasons are printed with the result. Each replayed label is scored 63 sessions later against SPY exactly as a live signal
+is, and every replayed label goes through the same binomial, Monte Carlo and BEF tests, so there is a verdict on the
+method months before the live log reaches 30. The replay uses today's S&P 100 list for the whole period, which is
+survivorship bias, and says so. It reruns once a day or whenever a weight or threshold changes.
+
+The **experiment log** counts every distinct set of weights and thresholds that has been backtested as one trial and
+stores each trial's per-period Sharpe ratio, skew and kurtosis, because the **Deflated Sharpe Ratio** (Bailey and
+Lopez de Prado) needs them: with N trials, the best Sharpe you would expect from luck alone is
+SR0 = sqrt(V[SR]) x ((1 - g) Z(1 - 1/N) + g Z(1 - 1/(N e))) with g = 0.5772, and the DSR is the probability that the
+current Sharpe is really above SR0, Phi((SR - SR0) sqrt(T - 1) / sqrt(1 - skew SR + (kurtosis - 1)/4 SR^2)). It
+needs two trials to say anything. The point is the one the spec makes: tuning weights to the backtest is the trap, and
+the counter makes the cost of every try visible.
+
+## Sizing, correlation, dates, brief
+
+The **Size** tab is the book's rule (page 65): sizing is only the choice of how much capital to put in and must never
+change the signal, so it is a separate panel that reads nothing back into the scores. Type an account size and press
+Enter: for each ticker, the shares such that a stop 2 x ATR(14) away loses 1 percent of the account, and the number of
+option contracts whose total premium stays within 1 percent, using the ask of the contract the options check chose. The
+ATR is the simple mean of the true range over 14 sessions, from the stored highs and lows. The same tab shows the
+**correlation table** of the watchlist's daily returns over 90 sessions and warns when two holdings sit above 0.8.
+
+The third line of the top strip is the **dates strip**: the next FOMC meeting and CPI release from `calendar.yaml` and
+each ticker's next earnings date from Finnhub. Finnhub's economic calendar is a paid tier, so the Fed and CPI dates are
+kept by hand in that file, each with the page it was read from and the day it was read; nothing in it was typed from
+memory, and the 2027 FOMC dates carry the Fed's own "tentative" note.
+
+`b` (or `--brief`) writes today's **brief** to `briefs/YYYY-MM-DD.md`: the market strip, the dates, and for each ticker
+the price, the score, the options check and the newest DIRECT headlines, then the validity reports and the backtest.
+
 ## How the code is laid out
 
 ```
@@ -311,11 +351,16 @@ src/stock_terminal/
   quant/factors.py    the six factors as pure functions, inputs kept for the explain view
   quant/scoring.py    z-scores, composite, labels, the Score tab and explain text
   quant/engine.py     the score refresh: universe closes, fundamentals, news factor, signal log
-  quant/store.py      SQLite tables daily_bars, scores, signals, iv_history
+  quant/store.py      SQLite tables daily_bars (with highs and lows), scores, signals, iv_history, backtests, experiments, settings
   quant/blackscholes.py  Black-Scholes prices, Greeks, implied vol, probabilities, the end-price simulation
   quant/options.py    the four-step options check and its text
   quant/validity.py   binomial sums, the Binomial Evolution Function, Monte Carlo, status, the report and its text
   quant/signal_scorer.py  scoring logged signals against stored closes (beat SPY, or beyond breakeven)
+  quant/backtest.py   the walk-forward replay of the price factors and its report
+  quant/experiments.py  the experiment log and the Deflated Sharpe Ratio
+  quant/sizing.py     ATR, shares and contracts for the account, the correlation table
+  quant/calendar.py   calendar.yaml and the dates strip
+  quant/brief.py      the markdown brief
   datapoint.py        DataPoint: a value plus its source, age and status
   cache.py            SQLite cache (data/terminal.db)
   ratelimit.py        rolling-window rate limiter, one per client
@@ -326,6 +371,8 @@ tests/                pytest; no network, fakes for every client and the sentime
 docs/SPEC.md          the spec
 relationships.yaml    the relationship map and keyword tables (edit freely)
 universe.yaml         the reference universe for the score (edit freely)
+calendar.yaml         Fed and CPI dates with their sources (edit when the pages change)
+briefs/               the daily briefs (gitignored)
 ```
 
 Rules the code keeps: no order code anywhere; every outside call goes through a client with a rate limiter and the
