@@ -193,7 +193,7 @@ class AlpacaClient(BaseClient):
 
     # ----- daily closes for many symbols (the score's universe) -----
     def daily_closes(self, symbols: list[str], start: datetime, end: datetime) -> DataPoint:
-        """Split-adjusted daily closes: {symbol: [{"t": date, "c": close}]}. One request per 100 symbols; alpaca-py pages."""
+        """Split-adjusted daily closes: {symbol: [{"t": date, "c": close}]}. Requests of 25 symbols; alpaca-py pages each."""
         wanted = sorted({s.upper() for s in symbols if s})
         source = f"{self.source}/daily"
         if not wanted:
@@ -206,11 +206,14 @@ class AlpacaClient(BaseClient):
 
     def _fetch_daily(self, symbols: list[str], start: datetime, end: datetime) -> dict[str, list[dict[str, Any]]]:
         out: dict[str, list[dict[str, Any]]] = {s: [] for s in symbols}
-        for i in range(0, len(symbols), 100):
-            chunk = symbols[i : i + 100]
+        # No `limit`: alpaca-py treats it as the total bar count across the whole basket and stops paging there, which
+        # on the first live run (2026-11-22) cut 102 symbols x 275 days off at 10,000 bars, the letter F. Chunks of 25
+        # keep each response small; the SDK pages through each chunk on its own.
+        for i in range(0, len(symbols), 25):
+            chunk = symbols[i : i + 25]
             request = StockBarsRequest(
                 symbol_or_symbols=chunk, timeframe=TimeFrame.Day, start=start, end=end,
-                feed=self.feed, adjustment=Adjustment.SPLIT, limit=10_000,
+                feed=self.feed, adjustment=Adjustment.SPLIT,
             )
             result = self._data.get_stock_bars(request)
             data = getattr(result, "data", result)

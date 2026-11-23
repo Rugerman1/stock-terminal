@@ -16,6 +16,29 @@ def test_upsert_marks_duplicates_and_skips_known_ids(store, make_item):
     assert new == [] and dups == 0 and store.count() == 3
 
 
+def test_duplicate_adds_its_companies_to_the_original(store, make_item):
+    a = make_item("f:1", "Dow movers: Apple and Microsoft lead", hours_ago=3, symbols=["AAPL"], url="https://news.example/dow-movers")
+    b = make_item("f:2", "Dow movers: Apple and Microsoft lead", hours_ago=3, symbols=["MSFT"], url="https://news.example/dow-movers")
+    new, dups = store.upsert_items([a, b], NOW)
+    assert [i.id for i in new] == ["f:1"] and dups == 1
+    assert store.get("f:1").symbols == ["AAPL", "MSFT"] and store.get("f:2").duplicate_of == "f:1"
+    assert store.rededupe() == (1, 1) and store.get("f:1").symbols == ["AAPL", "MSFT"]
+
+
+def test_rededupe_recomputes_marks_with_the_current_rule(store, make_item):
+    a = make_item("x:1", "Why Apple Stock Rose Today", hours_ago=3, symbols=["AAPL"])
+    b = make_item("x:2", "Why Nvidia Stock Rose Today", hours_ago=2, symbols=["NVDA"])
+    store.upsert_items([a, b], NOW)
+    store.set_sentiment("x:1", 0.4, "fake")
+    assert store.get("x:2").duplicate_of is None
+    import sqlite3
+    with sqlite3.connect(store.path) as con:                        # pretend an older rule had merged them
+        con.execute("UPDATE news SET duplicate_of = 'x:1' WHERE id = 'x:2'")
+    assert store.get("x:2").duplicate_of == "x:1"
+    assert store.rededupe() == (2, 0)
+    assert store.get("x:2").duplicate_of is None and store.get("x:1").sentiment == 0.4   # sentiment survives
+
+
 def test_recent_is_newest_first_and_windowed(store, make_item):
     store.upsert_items([make_item("x:1", "Old story about rates", hours_ago=200), make_item("x:2", "New story about chips", hours_ago=1)], NOW)
     items = store.recent(NOW - timedelta(days=7))

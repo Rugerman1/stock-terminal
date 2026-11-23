@@ -58,11 +58,12 @@ class FactorScore:
     inputs: dict[str, Any] = field(default_factory=dict)
     source: str = ""
     components: dict[str, "FactorScore"] = field(default_factory=dict)
+    n: int = 0                                   # universe names behind the mean and std
 
     def to_dict(self) -> dict[str, Any]:
         out = {
             "weight": self.weight, "raw": self.raw, "z": self.z, "contribution": self.contribution,
-            "mean": self.mean, "std": self.std, "note": self.note, "inputs": self.inputs, "source": self.source,
+            "mean": self.mean, "std": self.std, "n": self.n, "note": self.note, "inputs": self.inputs, "source": self.source,
         }
         if self.components:
             out["components"] = {k: v.to_dict() for k, v in self.components.items()}
@@ -129,7 +130,7 @@ def _score_one(raw: RawFactors, stats: dict, weights: dict[str, float], cap: flo
                 avg, sd, n = stats.get(part, (None, None, 0))
                 z = zscore(fv.value, avg, sd, cap)
                 note = fv.note if not fv.ok else ("" if z is not None else f"no universe spread (n={n})")
-                components[part] = FactorScore(part, 0.0, fv.value, z, 0.0, avg, sd, note, fv.inputs)
+                components[part] = FactorScore(part, 0.0, fv.value, z, 0.0, avg, sd, note, fv.inputs, n=n)
                 if z is not None:
                     zs.append(z)
             z_quality = sum(zs) / len(zs) if zs else None
@@ -143,7 +144,7 @@ def _score_one(raw: RawFactors, stats: dict, weights: dict[str, float], cap: flo
             z = zscore(fv.value, avg, sd, cap)
             note = fv.note if not fv.ok else ("" if z is not None else f"no universe spread (n={n})")
             contribution = weight * (z or 0.0)
-            factors.append(FactorScore(name, weight, fv.value, z, contribution, avg, sd, note, fv.inputs, raw.sources.get(name, "")))
+            factors.append(FactorScore(name, weight, fv.value, z, contribution, avg, sd, note, fv.inputs, raw.sources.get(name, ""), n=n))
         last = factors[-1]
         if last.z is None:
             notes.append(f"{FACTOR_TITLES[name]} missing ({last.note}), counted as z = 0")
@@ -277,7 +278,7 @@ def explain_text(score: Score, universe_name: str = "universe", validity: str = 
                     lines.append(f"  {FACTOR_TITLES[part]}: missing ({c.note})")
                 else:
                     lines.append(
-                        f"  {FACTOR_TITLES[part]} = {raw_text(part, c.raw)}   universe mean {raw_text(part, c.mean)}, std {raw_text(part, c.std)}   z {_num(c.z)}"
+                        f"  {FACTOR_TITLES[part]} = {raw_text(part, c.raw)}   universe mean {raw_text(part, c.mean)}, std {raw_text(part, c.std)} (n={c.n})   z {_num(c.z)}"
                     )
             lines.append(f"  quality z = average of available part z-scores = {_num(f.z)}" + (f"   ({f.note})" if f.note else ""))
         else:
@@ -286,7 +287,7 @@ def explain_text(score: Score, universe_name: str = "universe", validity: str = 
             else:
                 lines.append(f"  inputs: {_inputs_text(f.name, f.inputs)}")
                 lines.append(
-                    f"  value {raw_text(f.name, f.raw)}   universe mean {raw_text(f.name, f.mean)}, std {raw_text(f.name, f.std)}   z {_num(f.z)}"
+                    f"  value {raw_text(f.name, f.raw)}   universe mean {raw_text(f.name, f.mean)}, std {raw_text(f.name, f.std)} (n={f.n})   z {_num(f.z)}"
                     + (f"   ({f.note})" if f.note else "")
                 )
         lines.append(f"  contribution = {f.weight:.2f} x {_num(f.z) if f.z is not None else '0 (missing)'} = {_num(f.contribution)}")

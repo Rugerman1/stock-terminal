@@ -33,7 +33,7 @@ news:
   market_symbols: [SPY, QQQ, TLT]   # market-wide news is pulled for these plus every sector ETF in the map (MACRO and SECTOR tags)
   reactions_per_refresh: 20    # how many price reactions are filled per news refresh (2 bar calls each)
   dedupe_hours: 48             # two headlines this close in time that share enough words are one story
-  dedupe_similarity: 0.5       # the share of words they must have in common (0 to 1)
+  dedupe_similarity: 0.7       # the share of words they must have in common (0 to 1); they must also share a ticker
 
 sentiment:
   enabled: true                # false = every sentiment shows as missing, nothing is loaded

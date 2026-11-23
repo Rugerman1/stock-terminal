@@ -51,6 +51,9 @@ def test_value_is_the_average_of_the_two_yields():
     assert only_eps.ok and abs(only_eps.value - 0.05) < 1e-12 and "only one" in only_eps.note
     assert not value(None, 100.0).ok and not value({"pfcfShareTTM": 0}, 100.0).ok
     assert value({"epsTTM": -2.0}, 100.0).value == -0.02          # a loss is a negative yield, shown as such
+    brk = value({"epsTTM": 59668.8, "pfcfShareTTM": 50.0}, 569.92)   # Finnhub's Class A EPS on the B share, seen live
+    assert brk.ok and abs(brk.value - 0.02) < 1e-12 and "earnings yield 10470% rejected" in brk.note
+    assert not value({"epsTTM": 59668.8}, 569.92).ok and "rejected" in value({"epsTTM": 59668.8}, 569.92).note
 
 
 def test_quality_components_and_fallbacks():

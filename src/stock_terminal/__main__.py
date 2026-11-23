@@ -8,6 +8,7 @@
     python -m stock_terminal --score AAPL    print AAPL's long-term score with the full explain view
     python -m stock_terminal --universe      pull the universe's closes, fundamentals and news now (the nightly job)
     python -m stock_terminal --signals       print the signal log (label changes)
+    python -m stock_terminal --rededupe      recompute the duplicate marks after a rule change
 
 Paths in config.yaml are relative to the folder you run from, so run from the repo root.
 """
@@ -42,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--score", metavar="TICKER", help="print one ticker's long-term score with the explain view")
     parser.add_argument("--universe", action="store_true", help="refresh the universe's closes, fundamentals and news now")
     parser.add_argument("--signals", action="store_true", help="print the signal log")
+    parser.add_argument("--rededupe", action="store_true", help="recompute every duplicate mark in the news store with the current rule")
     parser.add_argument("--config", default="config.yaml", help="settings file (default: config.yaml)")
     parser.add_argument("--watchlist", default="watchlist.yaml", help="watchlist file (default: watchlist.yaml)")
     parser.add_argument("--env", default=".env", help="secrets file (default: .env)")
@@ -243,6 +245,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_universe(provider, watchlist)
     if args.signals:
         return run_signals(provider)
+    if args.rededupe:
+        originals, duplicates = provider.store.rededupe()
+        print(f"news store re-deduplicated: {originals} originals, {duplicates} duplicates")
+        return 0
     StockTerminalApp(cfg, watchlist, provider, logger=logger).run()
     return 0
 

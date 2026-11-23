@@ -51,7 +51,7 @@ DEFAULTS: dict[str, Any] = {
         "market_symbols": ["SPY", "QQQ", "TLT"],
         "reactions_per_refresh": 20,
         "dedupe_hours": 48,
-        "dedupe_similarity": 0.5,
+        "dedupe_similarity": 0.7,
     },
     "sentiment": {
         "enabled": True,

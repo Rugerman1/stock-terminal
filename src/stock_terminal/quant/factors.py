@@ -17,6 +17,7 @@ MOMENTUM_FAR = 252
 TREND_WINDOW = 200
 VOL_WINDOW = 252
 TRADING_DAYS = 252
+YIELD_LIMIT = 1.0      # a yield beyond 100 percent is a data error, not a bargain
 
 
 @dataclass
@@ -93,26 +94,38 @@ def value(metrics: Optional[dict[str, Any]], price: Optional[float]) -> FactorVa
     """Average of earnings yield (EPS TTM / price) and free-cash-flow yield (1 / price-to-FCF per share TTM).
 
     Both are decimals (0.03 = 3 percent). A negative EPS or FCF gives a negative yield, which is the honest reading.
-    With only one of the two available, that one is used and the note says so.
+    With only one of the two available, that one is used and the note says so. A yield beyond +-100 percent means
+    earnings or cash flow per share larger than the price, which no large company has; it is a data error (seen live
+    2026-11-22: Finnhub gives BRK.B the Class A EPS of about 59,669 dollars) and is rejected with a note.
     """
     if not metrics:
         return FactorValue("value", None, "no fundamentals")
     inputs: dict[str, Any] = {}
     parts = []
+    rejected = []
     eps = _num(metrics, "epsTTM")
     if eps is not None and price:
         ey = eps / price
-        parts.append(ey)
         inputs.update({"epsTTM": eps, "price": price, "earnings_yield": ey})
+        if abs(ey) <= YIELD_LIMIT:
+            parts.append(ey)
+        else:
+            rejected.append(f"earnings yield {ey * 100:.0f}% rejected (EPS larger than the price: data error)")
     pfcf = _num(metrics, "pfcfShareTTM")
     if pfcf is not None and pfcf != 0:
         fy = 1.0 / pfcf
-        parts.append(fy)
         inputs.update({"pfcfShareTTM": pfcf, "fcf_yield": fy})
+        if abs(fy) <= YIELD_LIMIT:
+            parts.append(fy)
+        else:
+            rejected.append(f"FCF yield {fy * 100:.0f}% rejected (cash flow per share larger than the price: data error)")
     if not parts:
-        return FactorValue("value", None, "no epsTTM or pfcfShareTTM in the fundamentals", inputs)
-    note = "" if len(parts) == 2 else "only one of the two yields available"
-    return FactorValue("value", mean(parts), note, inputs)
+        reason = "; ".join(rejected) if rejected else "no epsTTM or pfcfShareTTM in the fundamentals"
+        return FactorValue("value", None, reason, inputs)
+    notes = list(rejected)
+    if len(parts) == 1 and not rejected:
+        notes.append("only one of the two yields available")
+    return FactorValue("value", mean(parts), "; ".join(notes), inputs)
 
 
 def quality_components(metrics: Optional[dict[str, Any]]) -> dict[str, FactorValue]:

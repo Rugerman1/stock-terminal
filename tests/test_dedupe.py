@@ -19,6 +19,13 @@ def test_same_url_is_same_story(make_item):
     assert is_same_story(a, b)
 
 
+def test_normalise_url_keeps_the_query_that_identifies_the_article():
+    from stock_terminal.news.dedupe import normalise_url
+    assert normalise_url("https://finnhub.io/api/news?id=abc") != normalise_url("https://finnhub.io/api/news?id=def")
+    assert normalise_url("https://www.Example.com/story/?utm_source=x&id=7#top") == "example.com/story?id=7"
+    assert normalise_url("https://example.com/story?utm=1") == normalise_url("https://example.com/story/")
+
+
 def test_different_stories_stay_apart(make_item):
     a = make_item("x:1", "Apple unveils new iPhone with thinner body")
     b = make_item("x:2", "Apple faces antitrust lawsuit in the EU")
@@ -29,6 +36,18 @@ def test_identical_headline_days_apart_is_not_a_duplicate(make_item):
     a = make_item("x:1", "Fed holds rates steady", hours_ago=100)
     b = make_item("x:2", "Fed holds rates steady", hours_ago=1)
     assert not is_same_story(a, b)
+
+
+def test_templated_headlines_about_different_companies_are_different_stories(make_item):
+    a = make_item("x:1", "Why Apple Stock Rose Today", symbols=["AAPL"])
+    b = make_item("x:2", "Why Nvidia Stock Rose Today", symbols=["NVDA"])
+    assert not is_same_story(a, b)                                  # no ticker in common: never the same story
+    c = make_item("x:3", "Why Apple Stock Fell Today", symbols=["AAPL"])
+    assert not is_same_story(a, c)                                  # same company, opposite story: 3 of 5 words is under 70%
+    d = make_item("x:4", "Why Apple Stock Rose Today - Reuters", symbols=["AAPL", "MSFT"])
+    assert is_same_story(a, d)                                      # shared ticker and 4 of 5 words (80%)
+    e = make_item("x:5", "Why Apple Stock Rose Today - Motley Fool", symbols=["AAPL"])
+    assert not is_same_story(a, e)                                  # 4 of 6 words (67%) is under the bar on purpose
 
 
 def test_find_original_prefers_the_earliest_and_skips_duplicates(make_item):

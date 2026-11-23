@@ -55,6 +55,12 @@ signal log:
 .venv\Scripts\python -m stock_terminal --signals
 ```
 
+Recompute the news store's duplicate marks after changing the dedupe rule in `config.yaml`:
+
+```powershell
+.venv\Scripts\python -m stock_terminal --rededupe
+```
+
 Run the tests:
 
 ```powershell
@@ -160,9 +166,11 @@ traced to a word. Filings bring their own: an 8-K with item 2.02 is earnings, a 
 into your user profile. When it is not installed or fails to load, every sentiment shows `--` and the pane's second
 line says why. Set `sentiment.enabled: false` in `config.yaml` to skip it.
 
-**Duplicates**: two headlines within 48 hours that share at least half their words (after dropping filler words), or
-that point at the same link, are one story; the earliest is shown, the rest are kept in the database but hidden.
-Different articles about the same event are not merged on purpose.
+**Duplicates**: two headlines that point at the same link, or that were published within 48 hours, are about a
+company in common and share at least 70 percent of their words (after dropping filler words), are one story; the
+earliest is shown and carries every company the copies were filed under, the rest are kept in the database but
+hidden. Different articles about the same event are not merged on purpose, and "Why Apple Stock Rose Today" is not
+"Why Nvidia Stock Rose Today". `--rededupe` recomputes the marks after a rule change.
 
 **Reaction**: for every headline shown for a ticker, the app records the first traded price at or after the headline
 (a headline that lands after the close gets the next open), then the price one hour after that, and the closes of the
@@ -210,7 +218,10 @@ cut-offs live in `config.yaml` and are starting guesses from the spec, never tun
 Two choices the spec left open, both shown in the explain view: quality's three parts have different units (percent,
 percent, ratio), so each is z-scored against the universe before averaging; value's two parts are both yields, so
 they average as written. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
-the fetch time shown.
+the fetch time shown. A yield beyond 100 percent (earnings or cash flow per share larger than the price) is a data
+error, not a bargain, and is rejected with a note: Finnhub reports Berkshire's Class A earnings per B share. Free cash
+flow yield is not meaningful for banks, so their value factor leans on an inflated number; the spec's formula is kept
+and the explain view shows the inputs.
 
 **Signal log.** A label is logged only when it changes (one open long-term signal per ticker, so a stock that stays
 Favorable for three months is one bet, not sixty), with the close at the time and a 63-trading-day horizon. Phase 5

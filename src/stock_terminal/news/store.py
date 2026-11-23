@@ -7,6 +7,7 @@ price at the headline and 1 hour, 1 day and 5 days later, filled in as time pass
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timedelta
@@ -60,7 +61,7 @@ SCHEMA = (
 
 
 class NewsStore:
-    def __init__(self, path: str | Path, dedupe_hours: float = 48.0, dedupe_similarity: float = 0.5) -> None:
+    def __init__(self, path: str | Path, dedupe_hours: float = 48.0, dedupe_similarity: float = 0.7) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.dedupe_hours = dedupe_hours
@@ -118,6 +119,7 @@ class NewsStore:
                 if original is not None:
                     item.duplicate_of = original.id
                     duplicates += 1
+                    self._merge_symbols(con, original, item.symbols)
                 row = item.to_row()
                 row["story_key"] = story_key(item.headline)
                 con.execute(
@@ -130,6 +132,38 @@ class NewsStore:
                 if original is None:
                     new_originals.append(item)
         return new_originals, duplicates
+
+    def rededupe(self) -> tuple[int, int]:
+        """Recompute every duplicate mark with the current rule, oldest first. Returns (originals, duplicates).
+
+        Run after the rule changes. Sentiment is kept, so nothing is re-scored except items that were never scored."""
+        with self._lock, self._connect() as con:
+            con.execute("UPDATE news SET duplicate_of = NULL")
+            rows = con.execute("SELECT * FROM news ORDER BY published_at ASC, id ASC").fetchall()
+            items = [NewsItem.from_row(r) for r in rows]
+            originals: list[NewsItem] = []
+            duplicates = 0
+            for item in items:
+                window_start = item.published_at - timedelta(hours=self.dedupe_hours)
+                candidates = [o for o in originals if o.published_at >= window_start]
+                original = find_original(item, candidates, self.dedupe_hours, self.dedupe_similarity)
+                if original is None:
+                    originals.append(item)
+                else:
+                    duplicates += 1
+                    con.execute("UPDATE news SET duplicate_of = ? WHERE id = ?", (original.id, item.id))
+                    self._merge_symbols(con, original, item.symbols)
+        return len(originals), duplicates
+
+    @staticmethod
+    def _merge_symbols(con: sqlite3.Connection, original: NewsItem, symbols: list[str]) -> None:
+        """A syndicated article arrives once per company it is filed under. The original keeps every company, so the
+        story shows in each feed and counts as DIRECT for each (seen live 2026-11-22: one roundup under 30 tickers)."""
+        extra = [s for s in symbols if s not in original.symbols]
+        if not extra:
+            return
+        original.symbols = original.symbols + extra
+        con.execute("UPDATE news SET symbols = ? WHERE id = ?", (json.dumps(original.symbols), original.id))
 
     def unscored(self, since: datetime, limit: int = 200) -> list[NewsItem]:
         """Originals with no sentiment yet (duplicates borrow the original's score at display time)."""
