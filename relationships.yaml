@@ -1,0 +1,66 @@
+# Relationship map: what moves each ticker besides its own news. Edit freely; the app re-reads this file on
+# every news refresh. Nothing here is a secret.
+#
+# tickers.<T>.sector_etf   the ETF whose news counts as SECTOR for T
+# tickers.<T>.peers        up to 5 tickers whose news counts as PEER for T
+#                          (python -m stock_terminal --peers T prints Finnhub's suggestion as a snippet to paste)
+# tickers.<T>.topics       names from the topics table below; general news matching them counts as MACRO for T
+# tickers.<T>.aliases      words that mean the company in a headline (the ticker itself always counts)
+# sectors.<ETF>            a name and keywords: a headline with one of these counts as SECTOR even without the symbol
+# topics.<name>            keywords that identify a macro topic in a headline
+# catalysts.<type>         keywords for the catalyst type; the first type whose keyword matches wins, so order matters
+#
+# Keywords match whole words, any case, in the headline only. A ticker that is not listed here gets no PEER,
+# SECTOR or MACRO news, only DIRECT and FILING, and the screen says so.
+
+tickers:
+  AAPL:
+    sector_etf: XLK
+    peers: [MSFT, GOOGL, SONY, DELL, HPQ]
+    topics: [rates, china_trade, consumer]
+    aliases: [Apple, iPhone, Tim Cook]
+  MSFT:
+    sector_etf: XLK
+    peers: [GOOGL, AMZN, ORCL, CRM, AAPL]
+    topics: [rates, ai_regulation, china_trade]
+    aliases: [Microsoft, Azure, Satya Nadella, OpenAI]
+  NVDA:
+    sector_etf: SMH
+    peers: [AMD, AVGO, TSM, INTC, MU]
+    topics: [rates, chips_export, ai_regulation]
+    aliases: [Nvidia, Jensen Huang]
+
+sectors:
+  XLK:
+    name: Technology
+    keywords: [tech stocks, technology sector, software stocks, big tech, megacap tech, tech sector]
+  SMH:
+    name: Semiconductors
+    keywords: [semiconductor, semiconductors, chip stocks, chipmaker, chipmakers, foundry]
+  XLE:
+    name: Energy
+    keywords: [energy stocks, oil stocks, oil producers, energy sector]
+  XLF:
+    name: Financials
+    keywords: [bank stocks, banks, financial sector, financials]
+
+topics:
+  rates: [federal reserve, the fed, fomc, rate hike, rate cut, interest rate, interest rates, treasury yield, treasury yields, powell, bond yields]
+  inflation: [inflation, cpi, pce, consumer prices, price index]
+  jobs: [jobs report, payrolls, unemployment, labor market, jobless claims]
+  oil: [oil price, oil prices, crude, opec, brent, wti]
+  chips_export: [export control, export controls, chip export, chip exports, chip curbs, semiconductor export, export ban]
+  ai_regulation: [ai regulation, ai rules, ai safety, antitrust, ai act]
+  china_trade: [tariff, tariffs, trade war, china trade, trade talks, sanctions]
+  consumer: [consumer spending, retail sales, consumer confidence, consumer sentiment]
+  geopolitics: [war, missile, invasion, geopolitical, ceasefire, taiwan]
+
+catalysts:
+  earnings: [earnings, quarterly results, q1 results, q2 results, q3 results, q4 results, eps, revenue beat, revenue miss, reports revenue, profit rises, profit falls, net income, quarter]
+  guidance: [guidance, outlook, forecast, raises forecast, cuts forecast, expects revenue]
+  analyst: [upgrade, upgrades, downgrade, downgrades, price target, analyst, analysts, initiates coverage, overweight, underweight, outperform, reiterates]
+  mna: [acquisition, acquire, acquires, merger, buyout, takeover, deal to buy, agrees to buy, stake in]
+  legal: [lawsuit, antitrust, regulator, regulators, probe, doj, ftc, sec charges, fine, fined, settlement, court, ruling, investigation, subpoena]
+  insider: [insider, form 4, ceo sells, ceo buys, director sells, director buys, sold shares, bought shares]
+  product: [launch, launches, unveils, debuts, introduces, new chip, new model, rollout, product]
+  macro: [federal reserve, fed, inflation, cpi, jobs report, tariff, tariffs, interest rate, interest rates, treasury, gdp]

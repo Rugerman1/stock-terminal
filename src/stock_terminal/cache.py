@@ -80,3 +80,8 @@ class Cache:
     def count(self) -> int:
         row = self._run("SELECT COUNT(*) FROM cache", fetch=True)
         return int(row[0]) if row else 0
+
+    def purge_expired(self, grace: float = 86400.0) -> None:
+        """Drop entries that have been past their TTL for longer than `grace` seconds (keeps the file small
+        and honours FRED's no-archiving terms). Recently expired entries stay so a failing source can still show STALE."""
+        self._run("DELETE FROM cache WHERE fetched_at + ttl + ? < ?", (float(grace), float(self._clock())))

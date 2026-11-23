@@ -30,14 +30,46 @@ DEFAULTS: dict[str, Any] = {
     "alpaca": {
         "feed": "iex",
         "calls_per_minute": 150,
+        "news_calls_per_minute": 30,
         "delayed_after_seconds": 900,
     },
     "fred": {
         "calls_per_minute": 60,
     },
+    "finnhub": {
+        "calls_per_minute": 50,
+    },
+    "edgar": {
+        "calls_per_second": 8,
+    },
+    "news": {
+        "refresh_seconds": 600,
+        "lookback_days": 7,
+        "filings_lookback_days": 30,
+        "per_source_limit": 50,
+        "relationships_path": "relationships.yaml",
+        "market_symbols": ["SPY", "QQQ", "TLT"],
+        "reactions_per_refresh": 20,
+        "dedupe_hours": 48,
+        "dedupe_similarity": 0.5,
+    },
+    "sentiment": {
+        "enabled": True,
+        "model": "ProsusAI/finbert",
+        "batch_size": 16,
+    },
     "cache": {
         "path": "data/terminal.db",
-        "ttl_seconds": {"snapshot": 60, "clock": 60, "fred": 21600},
+        "ttl_seconds": {
+            "snapshot": 60,
+            "clock": 60,
+            "fred": 21600,
+            "news": 600,
+            "edgar": 3600,
+            "bars": 3600,
+            "peers": 86400,
+            "cik": 604800,
+        },
     },
     "log": {
         "path": "logs/terminal.log",
@@ -68,8 +100,24 @@ def validate(cfg: Mapping[str, Any]) -> None:
     _positive(cfg, "refresh_seconds")
     _positive(cfg, "alpaca", "calls_per_minute")
     _positive(cfg, "alpaca", "delayed_after_seconds")
+    _positive(cfg, "alpaca", "news_calls_per_minute")
     _positive(cfg, "fred", "calls_per_minute")
-    for name in ("snapshot", "clock", "fred"):
+    _positive(cfg, "finnhub", "calls_per_minute")
+    _positive(cfg, "edgar", "calls_per_second")
+    for name in ("refresh_seconds", "lookback_days", "filings_lookback_days", "per_source_limit", "reactions_per_refresh", "dedupe_hours"):
+        _positive(cfg, "news", name)
+    similarity = cfg["news"]["dedupe_similarity"]
+    if not isinstance(similarity, (int, float)) or not 0 < similarity <= 1:
+        raise ConfigError(f"news.dedupe_similarity must be between 0 and 1, got {similarity!r}")
+    if not isinstance(cfg["news"]["relationships_path"], str) or not cfg["news"]["relationships_path"]:
+        raise ConfigError("news.relationships_path must be a file path")
+    market = cfg["news"]["market_symbols"]
+    if not isinstance(market, list) or not all(isinstance(s, str) and s for s in market):
+        raise ConfigError("news.market_symbols must be a list of ticker strings")
+    if not isinstance(cfg["sentiment"]["enabled"], bool):
+        raise ConfigError("sentiment.enabled must be true or false")
+    _positive(cfg, "sentiment", "batch_size")
+    for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik"):
         _positive(cfg, "cache", "ttl_seconds", name)
     equities = cfg["top_strip"]["equities"]
     if not isinstance(equities, list) or not all(isinstance(s, str) and s for s in equities):

@@ -17,8 +17,8 @@ from ..cache import Cache
 from ..datapoint import FRESH, STALE, DataPoint, human_age, utcnow
 from ..ratelimit import RateLimiter
 
-# FRED puts the API key in the URL, so an error that echoes the URL would leak it. Scrub it.
-_KEY_IN_URL = re.compile(r"(api_key=)[^&\s]+", re.IGNORECASE)
+# FRED puts the API key in the URL (and some APIs use token=), so an error that echoes the URL would leak it. Scrub it.
+_KEY_IN_URL = re.compile(r"((?:api_key|token|apikey)=)[^&\s]+", re.IGNORECASE)
 
 
 def short_error(exc: BaseException) -> str:

@@ -11,11 +11,34 @@ top_strip:
 
 alpaca:
   feed: iex                    # the free plan's stock feed (one exchange, real-time)
-  calls_per_minute: 150        # the plan allows 200; headroom on purpose
+  calls_per_minute: 150        # prices and bars; the plan allows 200 in total, headroom on purpose
+  news_calls_per_minute: 30    # news shares the same 200; 150 + 30 stays under it
   delayed_after_seconds: 900   # while the market is open, a last trade older than 15 minutes is shown as DELAYED
 
 fred:
   calls_per_minute: 60         # the API allows 120; headroom on purpose
+
+finnhub:
+  calls_per_minute: 50         # the free plan allows 60
+
+edgar:
+  calls_per_second: 8          # the SEC allows 10
+
+news:
+  refresh_seconds: 600         # how often headlines and filings are re-pulled (prices refresh on refresh_seconds above)
+  lookback_days: 7             # how far back the feed shows headlines
+  filings_lookback_days: 30    # how far back 8-Ks and Form 4s are shown
+  per_source_limit: 50         # newest items kept per source per call (Alpaca's maximum is 50)
+  relationships_path: relationships.yaml
+  market_symbols: [SPY, QQQ, TLT]   # market-wide news is pulled for these plus every sector ETF in the map (MACRO and SECTOR tags)
+  reactions_per_refresh: 20    # how many price reactions are filled per news refresh (2 bar calls each)
+  dedupe_hours: 48             # two headlines this close in time that share enough words are one story
+  dedupe_similarity: 0.5       # the share of words they must have in common (0 to 1)
+
+sentiment:
+  enabled: true                # false = every sentiment shows as missing, nothing is loaded
+  model: ProsusAI/finbert      # downloaded once by Hugging Face (about 440 MB), runs on the CPU
+  batch_size: 16
 
 cache:
   path: data/terminal.db
@@ -23,6 +46,11 @@ cache:
     snapshot: 60
     clock: 60
     fred: 21600                # 6 hours; FRED publishes once a day
+    news: 600                  # matches news.refresh_seconds
+    edgar: 3600                # a company's filing list; new filings show within the hour
+    bars: 3600                 # bars for the reaction tracker; a window in the past never changes
+    peers: 86400               # Finnhub's peers list for --peers
+    cik: 604800                # the SEC's ticker-to-CIK table, one week
 
 log:
   path: logs/terminal.log
