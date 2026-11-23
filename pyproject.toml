@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "stock-terminal"
 version = "0.1.0"
-description = "Read-only stock news, quant read and validity terminal. No orders, ever."
+description = "Project Watchtower: read-only stock news, quant read and validity terminal. No orders, ever."
 requires-python = ">=3.11"
 dynamic = ["dependencies"]
 

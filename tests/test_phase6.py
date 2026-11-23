@@ -169,7 +169,7 @@ def test_brief_is_written_from_the_boards(tmp_path, cfg):
     quant = QuantBoard(scores={"AAPL": score}, status="scored", backtest={"signals": 0, "notes": ["nothing yet"]})
     now = datetime(2026, 11, 22, 22, 30, tzinfo=UTC)
     text = build_brief(cfg, None, None, quant, now, "Dates: FOMC Dec 8-9 (16d)")
-    assert text.startswith("# Watchlist brief, Sunday November 22, 2026, 5:30 PM ET") and "## AAPL" in text and "Neutral" in text and "## Validity" in text
+    assert text.startswith("# Watchtower brief, Sunday November 22, 2026, 5:30 PM ET") and "## AAPL" in text and "Neutral" in text and "## Validity" in text
     assert "never buy or sell" in text and "Dates: FOMC" in text and "FRED API" in text
     path = write_brief(tmp_path / "briefs", text, now)
     assert path.name == "2026-11-22.md" and path.read_text(encoding="utf-8") == text

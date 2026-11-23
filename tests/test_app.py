@@ -255,7 +255,7 @@ async def test_size_tab_dates_strip_and_brief(tmp_path, cfg):
         await pilot.press("b")
         await pilot.pause()
         files = list((tmp_path / "briefs").glob("*.md"))
-        assert len(files) == 1 and "# Watchlist brief" in files[0].read_text(encoding="utf-8") and "## AAPL" in files[0].read_text(encoding="utf-8")
+        assert len(files) == 1 and "# Watchtower brief" in files[0].read_text(encoding="utf-8") and "## AAPL" in files[0].read_text(encoding="utf-8")
 
 
 async def test_add_and_delete_keys(tmp_path, cfg):

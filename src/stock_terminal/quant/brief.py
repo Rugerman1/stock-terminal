@@ -25,7 +25,7 @@ def build_brief(cfg: dict[str, Any], board: Any, news_board: Any, quant_board: A
     from .backtest import backtest_summary
 
     local = now.astimezone(NY)
-    lines = [f"# Watchlist brief, {local.strftime('%A %B %d, %Y, %I:%M %p ET').replace(' 0', ' ')}", ""]
+    lines = [f"# Watchtower brief, {local.strftime('%A %B %d, %Y, %I:%M %p ET').replace(' 0', ' ')}", ""]
     lines.append("Read-only. Labels are Favorable / Neutral / Unfavorable and Call candidate / Put candidate / No trade, never buy or sell. "
                  "Every label carries its validity status; UNPROVEN means fewer than 30 scored signals.")
     lines.append("")

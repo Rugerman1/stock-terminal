@@ -1,6 +1,7 @@
-# Stock Terminal
+# Project Watchtower
 
-A keyboard-driven terminal app for a watchlist of stocks. Three jobs, built in six phases:
+A keyboard-driven terminal app for a watchlist of stocks: it watches, it never fires. Three jobs, built in six
+phases (the Python package and this repo keep the working name `stock-terminal`):
 
 1. **News** for each stock, plus news that moves it without naming it (Phase 2).
 2. **Quant read**: a long-term score and a call / put check, every formula and input on screen (Phases 3 and 4).

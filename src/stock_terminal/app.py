@@ -152,7 +152,7 @@ class ExplainScreen(ModalScreen[None]):
 
 
 class StockTerminalApp(App[None]):
-    TITLE = "Stock Terminal: read-only, no orders, ever"
+    TITLE = "Watchtower: read-only, no orders, ever"
     CSS = """
     #top-strip { height: auto; padding: 0 1; background: $panel; border-bottom: solid $primary; }
     #banner { height: auto; padding: 0 1; background: $error; color: $text; display: none; }

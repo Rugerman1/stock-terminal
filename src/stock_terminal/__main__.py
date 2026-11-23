@@ -48,7 +48,7 @@ from .watchlist import Watchlist
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="stock_terminal",
-        description="Read-only stock news, quant read and validity terminal. Places no orders.",
+        description="Project Watchtower: read-only stock news, quant read and validity terminal. Places no orders.",
     )
     parser.add_argument("--check", action="store_true", help="fetch each source once, print its status, and exit")
     parser.add_argument("--news", metavar="TICKER", help="print the tagged news feed for one ticker and exit")
@@ -138,7 +138,7 @@ def print_quant_status(board: QuantBoard, tickers: list[str]) -> None:
 
 
 def run_check(cfg: dict[str, Any], keys: Keys, provider: Provider, watchlist: Watchlist) -> int:
-    print("Keys present (names only, values are never printed):")
+    print("Project Watchtower, read-only. Keys present (names only, values are never printed):")
     for name, present in keys.summary().items():
         print(f"  {name:<18} {'set' if present else 'unset'}")
 
