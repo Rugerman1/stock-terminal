@@ -68,3 +68,21 @@ def test_iv_history_and_rank(tmp_path):
     assert n == 10 and abs(rank - (0.25 - 0.20) / (0.29 - 0.20)) < 1e-9
     assert store.iv_rank("AAPL", 0.50, need=5)[0] == 1.0 and store.iv_rank("AAPL", 0.10, need=5)[0] == 0.0
     assert store.iv_rank("AAPL", None, need=5) == (None, 10)
+
+
+def test_outcome_columns_are_added_to_an_old_database_and_round_trip(tmp_path):
+    import sqlite3
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as con:   # the Phase 3 shape of the table, without the scoring columns
+        con.execute("CREATE TABLE signals (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, kind TEXT NOT NULL, label TEXT NOT NULL, direction INTEGER NOT NULL, opened_at TEXT NOT NULL, open_price REAL, horizon_days INTEGER NOT NULL, closed_at TEXT, close_price REAL, outcome INTEGER, note TEXT)")
+        con.execute("INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note) VALUES ('AAPL', 'long_term', 'Favorable', 1, '2026-10-01T20:00:00+00:00', 250.0, 63, '')")
+    store = MarketStore(path)
+    old = store.signals("AAPL")[0]
+    assert old.target is None and old.scored_at is None and old.score_note == ""
+    assert [s.id for s in store.unscored_signals()] == [old.id] and store.open_count("long_term") == 1
+    store.save_outcome(old.id, 1, NOW, 260.0, 0.04, 0.01, "horizon; vs SPY")
+    scored = store.scored_signals("long_term")[0]
+    assert scored.outcome == 1 and scored.score_price == 260.0 and scored.stock_return == 0.04 and scored.bench_return == 0.01 and scored.scored_at == NOW
+    assert store.unscored_signals() == [] and store.open_count("long_term") == 0
+    options = store.record_label("AAPL", "Call candidate", 250.0, NOW, 40, kind="options", detail="AAPLC", target=262.5)
+    assert options.target == 262.5 and store.unscored_signals("options")[0].id == options.id

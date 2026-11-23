@@ -19,7 +19,7 @@ validity status. The full spec is in [docs/SPEC.md](docs/SPEC.md).
 | 2 | News engine: relationship map, Alpaca + Finnhub + EDGAR, DIRECT / PEER / SECTOR / MACRO / FILING tags, catalyst types, FinBERT sentiment, dedupe, reaction tracker, news pane | **Built 2026-11-22, live on every source the same night:** Alpaca news, Finnhub, EDGAR, FinBERT, reactions filled from bars. |
 | 3 | Long-term score: six factors as z-scores against the S&P 100, Favorable / Neutral / Unfavorable, the `?` explain view, the signal log | **Built 2026-11-22.** |
 | 4 | Options check: direction score, contract pick on the indicative feed, HV and IV, vol ratio, IV rank collection, expected move, breakeven, two probabilities of profit, simulated expected value, max loss, Greeks, Call / Put candidate or No trade with the failed check named, earnings warning, options signal log | **Built 2026-11-22.** |
-| 5 | Signal log, three validity tests, status banner | Not started |
+| 5 | Signal scoring at the horizon (beat SPY, or beyond breakeven), the binomial test at 50 percent and at the universe's rate, Monte Carlo, the Binomial Evolution Function per ticker, UNPROVEN / RANDOM-LIKE / WEAK EVIDENCE / SIGNIFICANT everywhere a label shows, the virtual-mode banner, `--validity` | **Built 2026-11-22.** Reads UNPROVEN until 30 signals are scored, which takes months by design. |
 | 6 | Backtest, experiment log, sizing panel, extras | Not started |
 
 ## Run it
@@ -54,6 +54,7 @@ signal log:
 .venv\Scripts\python -m stock_terminal --options AAPL
 .venv\Scripts\python -m stock_terminal --universe
 .venv\Scripts\python -m stock_terminal --signals
+.venv\Scripts\python -m stock_terminal --validity
 ```
 
 Recompute the news store's duplicate marks after changing the dedupe rule in `config.yaml`:
@@ -136,7 +137,9 @@ How to read a number:
   Score tab spells it out.
 - `Opt` is the options label: `CALL` Call candidate, `PUT` Put candidate, `none` No trade, `--` no check. The Options tab
   shows the contract, the numbers and which check failed. `Earn` is days to the next earnings date from Finnhub's calendar.
-- The validity column reads `UNPROVEN 0/30` until the app has produced and scored 30 signals (Phase 5).
+- The Validity column is the honesty check's verdict on the long-term labels: `UNPROVEN n/30` until 30 signals are scored,
+  then `RANDOM-LIKE`, `WEAK EVIDENCE` or `SIGNIFICANT`. In RANDOM-LIKE the LT and Opt cells are greyed out and a red banner
+  says so: virtual mode, keep recording, stop trusting. The Validity tab has the three tests for both kinds of signal.
 
 ## The news pane
 
@@ -259,6 +262,32 @@ A candidate is logged as an options signal with the close and the contract's exp
 contract or a return to No trade closes it. Phase 5 scores these too. `config.yaml`'s `options:` block holds every
 threshold; they are the spec's numbers, not tuned.
 
+## The honesty check
+
+Every label is logged when it appears (Phases 3 and 4) and scored once its horizon passes: the 63rd session after a
+long-term label, the contract's expiry for an options candidate, or the session the label changed on when that comes
+first, because the label changing is the system closing the bet. A long-term label wins when the stock beat SPY in the
+predicted direction over the window, so a rising market does not count as skill. An options candidate wins when the
+stock ended beyond the breakeven on the predicted side. Neutral labels predict nothing and are skipped. Prices are the
+stored daily closes; nothing is estimated between sessions.
+
+The last 50 scored signals of each kind then go through the three tests from Berdondini's *The Theory of Quantitative
+Trading* (pages 36 to 42 and 51 to 58):
+
+1. **Binomial**: P(X >= k), the chance of k or more wins in n tries by luck, at the 50 percent baseline the spec sets for
+   beat-SPY outcomes, and beside it at the empirical rate: how often a random universe name won over the same windows.
+2. **Monte Carlo**: 10,000 runs; each run replaces every real signal with a random universe name over the same window and
+   direction, scored the same way; the share of runs with at least as many wins.
+3. **Binomial Evolution Function**, per ticker: insert an opposite test trade in each gap between two same-side trades
+   (scored from the market's move over the gap), keep only the trades that sit in a consecutive same-result pair, binomial
+   at 50 percent. The spec's example [1, 0, 1, 0, 1, 1, 0] gives 2 kept, 2 wins, 25 percent, and the test suite pins it.
+
+Status: UNPROVEN under 30 scored; RANDOM-LIKE when the pooled binomial probability is above 5 percent (the book's virtual
+mode: the app keeps recording, you stop trusting); WEAK EVIDENCE between 1 and 5 percent; SIGNIFICANT below 1 percent.
+The headline probability is the pooled binomial at 50 percent; the other tests sit next to it. The thresholds live in
+`config.yaml`'s `validity:` block. The spec's binomial values (16.6, 5.7 and 1.7 percent behind at p = 0.6 after 10, 50
+and 100; 48.3 percent; 0.00025 percent) are pinned by tests to the digit.
+
 ## How the code is laid out
 
 ```
@@ -285,6 +314,8 @@ src/stock_terminal/
   quant/store.py      SQLite tables daily_bars, scores, signals, iv_history
   quant/blackscholes.py  Black-Scholes prices, Greeks, implied vol, probabilities, the end-price simulation
   quant/options.py    the four-step options check and its text
+  quant/validity.py   binomial sums, the Binomial Evolution Function, Monte Carlo, status, the report and its text
+  quant/signal_scorer.py  scoring logged signals against stored closes (beat SPY, or beyond breakeven)
   datapoint.py        DataPoint: a value plus its source, age and status
   cache.py            SQLite cache (data/terminal.db)
   ratelimit.py        rolling-window rate limiter, one per client

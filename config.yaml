@@ -78,6 +78,14 @@ options:                       # the call / put check (Phase 4). Read-only: quot
   news_days: 7                 # the direction score's news component uses DIRECT headlines this recent
   news_min_headlines: 3        # fewer than this and the news component is missing
 
+validity:                      # the honesty check (Phase 5), Berdondini pp. 36-42 and 51-58
+  min_signals: 30              # fewer scored signals than this = UNPROVEN
+  window: 50                   # the tests run on the newest 50 scored signals
+  random_like_above: 0.05      # binomial probability above 5% = RANDOM-LIKE (virtual mode: keep recording, stop trusting)
+  significant_below: 0.01      # below 1% = SIGNIFICANT; between = WEAK EVIDENCE
+  monte_carlo_runs: 10000
+  seed: 42
+
 cache:
   path: data/terminal.db
   ttl_seconds:                 # TTL = time to live: how long a cached value is used before re-fetching

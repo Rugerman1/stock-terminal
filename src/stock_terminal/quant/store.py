@@ -87,9 +87,18 @@ class Signal:
     close_price: Optional[float] = None
     outcome: Optional[int] = None
     note: str = ""
+    target: Optional[float] = None          # options: the breakeven at the time
+    scored_at: Optional[datetime] = None
+    score_price: Optional[float] = None
+    stock_return: Optional[float] = None
+    bench_return: Optional[float] = None
+    score_note: str = ""
 
 
 class MarketStore:
+    # Columns added after the table was first created; ALTER TABLE adds them to an existing database.
+    SIGNAL_COLUMNS = (("target", "REAL"), ("scored_at", "TEXT"), ("score_price", "REAL"), ("stock_return", "REAL"), ("bench_return", "REAL"), ("score_note", "TEXT"))
+
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,6 +106,10 @@ class MarketStore:
         with self._connect() as con:
             for statement in SCHEMA:
                 con.execute(statement)
+            present = {row["name"] for row in con.execute("PRAGMA table_info(signals)").fetchall()}
+            for name, kind in self.SIGNAL_COLUMNS:
+                if name not in present:
+                    con.execute(f"ALTER TABLE signals ADD COLUMN {name} {kind}")
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path, timeout=10)
@@ -182,7 +195,8 @@ class MarketStore:
         return self._signal(row) if row else None
 
     def record_label(
-        self, ticker: str, label: str, price: Optional[float], at: datetime, horizon_days: int = 63, kind: str = LONG_TERM, detail: str = ""
+        self, ticker: str, label: str, price: Optional[float], at: datetime, horizon_days: int = 63, kind: str = LONG_TERM, detail: str = "",
+        target: Optional[float] = None,
     ) -> Optional[Signal]:
         """Open a new signal when the label (or its detail, the contract for options) differs from the open one, closing
         the old. Returns the new signal, or None when nothing changed."""
@@ -197,8 +211,8 @@ class MarketStore:
                     (iso(at), price, (current.note + "; " if current.note else "") + f"label changed to {label}", current.id),
                 )
             cur = con.execute(
-                "INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (ticker, kind, label, DIRECTIONS.get(label, 0), iso(at), price, horizon_days, detail),
+                "INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note, target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, kind, label, DIRECTIONS.get(label, 0), iso(at), price, horizon_days, detail, target),
             )
             new_id = cur.lastrowid
             row = con.execute("SELECT * FROM signals WHERE id = ?", (new_id,)).fetchone()
@@ -235,6 +249,30 @@ class MarketStore:
             return None, n
         return max(0.0, min(1.0, (iv_now - lo) / (hi - lo))), n
 
+    def unscored_signals(self, kind: Optional[str] = None) -> list[Signal]:
+        sql, params = "SELECT * FROM signals WHERE scored_at IS NULL", []
+        if kind:
+            sql += " AND kind = ?"; params.append(kind)
+        with self._lock, self._connect() as con:
+            rows = con.execute(sql + " ORDER BY id", params).fetchall()
+        return [self._signal(r) for r in rows]
+
+    def scored_signals(self, kind: str) -> list[Signal]:
+        with self._lock, self._connect() as con:
+            rows = con.execute("SELECT * FROM signals WHERE kind = ? AND outcome IS NOT NULL ORDER BY scored_at, id", (kind,)).fetchall()
+        return [self._signal(r) for r in rows]
+
+    def open_count(self, kind: str) -> int:
+        with self._lock, self._connect() as con:
+            return int(con.execute("SELECT COUNT(*) FROM signals WHERE kind = ? AND closed_at IS NULL AND scored_at IS NULL AND direction != 0", (kind,)).fetchone()[0])
+
+    def save_outcome(self, signal_id: int, outcome: Optional[int], scored_at: datetime, score_price: Optional[float], stock_return: Optional[float], bench_return: Optional[float], note: str) -> None:
+        with self._lock, self._connect() as con:
+            con.execute(
+                "UPDATE signals SET outcome = ?, scored_at = ?, score_price = ?, stock_return = ?, bench_return = ?, score_note = ? WHERE id = ?",
+                (outcome, iso(scored_at), score_price, stock_return, bench_return, note, signal_id),
+            )
+
     def signals(self, ticker: Optional[str] = None, kind: Optional[str] = None) -> list[Signal]:
         sql, params = "SELECT * FROM signals", []
         clauses = []
@@ -255,4 +293,6 @@ class MarketStore:
             id=int(row["id"]), ticker=row["ticker"], kind=row["kind"], label=row["label"], direction=int(row["direction"]),
             opened_at=parse_when(row["opened_at"]), open_price=row["open_price"], horizon_days=int(row["horizon_days"]),
             closed_at=parse_when(row["closed_at"]), close_price=row["close_price"], outcome=row["outcome"], note=row["note"] or "",
+            target=row["target"], scored_at=parse_when(row["scored_at"]), score_price=row["score_price"],
+            stock_return=row["stock_return"], bench_return=row["bench_return"], score_note=row["score_note"] or "",
         )

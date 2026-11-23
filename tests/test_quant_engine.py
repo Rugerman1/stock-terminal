@@ -214,3 +214,16 @@ def test_options_check_runs_per_ticker_and_logs_candidates(tmp_path, cfg, cache)
     # A second run with the same labels logs nothing new; the IV for the day is stored once.
     board2 = engine.refresh(["AAPL", "U0"], now=NOW + timedelta(hours=1))
     assert not any("options" in e for e in board2.signals) and market.iv_rank("AAPL", 0.22)[1] == 1
+
+
+def test_validity_reports_ride_on_the_board(tmp_path, cfg, cache):
+    engine, market, _ = make(tmp_path, cfg, cache)
+    board = engine.refresh(["AAPL"], now=NOW)
+    assert set(board.validity) == {"long_term", "options"}
+    assert board.validity_text("long_term") == "UNPROVEN 0/30" and not board.virtual_mode and board.scored == []
+    # Seed an old signal whose 63-session horizon has passed; the next refresh scores it against SPY.
+    old = NOW - timedelta(days=120)
+    market.record_label("U1", "Favorable", 90.0, old, 63)              # a universe name, so the refresh has not logged it already
+    board = engine.refresh(["AAPL"], now=NOW + timedelta(hours=1))
+    assert len(board.scored) == 1 and "U1 long_term Favorable" in board.scored[0] and "horizon" in board.scored[0]
+    assert board.validity["long_term"].n_scored == 1 and board.validity_text("long_term") == "UNPROVEN 1/30"

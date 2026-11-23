@@ -9,6 +9,7 @@
     python -m stock_terminal --options AAPL  print AAPL's call / put check with the full explain view
     python -m stock_terminal --universe      pull the universe's closes, fundamentals and news now (the nightly job)
     python -m stock_terminal --signals       print the signal log (label changes)
+    python -m stock_terminal --validity      score due signals and print the three validity tests
     python -m stock_terminal --rededupe      recompute the duplicate marks after a rule change
 
 Paths in config.yaml are relative to the folder you run from, so run from the repo root.
@@ -28,6 +29,8 @@ from .news.models import RELATIONS, NewsBoard
 from .provider import LiveProvider, Provider
 from .quant.engine import QuantBoard
 from .quant.options import options_explain, options_summary
+from .quant.store import LONG_TERM, OPTIONS
+from .quant.validity import validity_explain, validity_summary
 from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label, peers_snippet
 from .watchlist import Watchlist
@@ -46,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--options", metavar="TICKER", help="print one ticker's call / put check with the explain view")
     parser.add_argument("--universe", action="store_true", help="refresh the universe's closes, fundamentals and news now")
     parser.add_argument("--signals", action="store_true", help="print the signal log")
+    parser.add_argument("--validity", action="store_true", help="score due signals and print the three validity tests")
     parser.add_argument("--rededupe", action="store_true", help="recompute every duplicate mark in the news store with the current rule")
     parser.add_argument("--config", default="config.yaml", help="settings file (default: config.yaml)")
     parser.add_argument("--watchlist", default="watchlist.yaml", help="watchlist file (default: watchlist.yaml)")
@@ -108,6 +112,12 @@ def print_quant_status(board: QuantBoard, tickers: list[str]) -> None:
                 print(f"         failed {f}")
     for event in board.signals:
         print(f"  signal logged: {event}")
+    for event in board.scored:
+        print(f"  signal scored: {event}")
+    if board.validity:
+        print("\nValidity:")
+        for kind, report in board.validity.items():
+            print(f"  {kind:<10} {report.column_text:<16} {report.n_scored} scored, {report.n_open} open" + (f", binomial P {report.binomial.probability * 100:.2f}%" if report.binomial.probability is not None else ""))
 
 
 def run_check(cfg: dict[str, Any], keys: Keys, provider: Provider, watchlist: Watchlist) -> int:
@@ -204,6 +214,18 @@ def run_options(provider: Provider, ticker: str) -> int:
     return 0
 
 
+def run_validity(provider: Provider, watchlist: Watchlist) -> int:
+    board = provider.refresh_quant(list(watchlist.tickers), progress=_progress)
+    for event in board.scored:
+        print(f"scored: {event}")
+    print()
+    for kind in (LONG_TERM, OPTIONS):
+        print(_plain(validity_summary(board.validity.get(kind))))
+        print()
+    print(_plain(validity_explain()))
+    return 0
+
+
 def run_universe(provider: Provider, watchlist: Watchlist) -> int:
     board = provider.refresh_quant(list(watchlist.tickers), progress=_progress, force=True)
     print_quant_status(board, list(watchlist.tickers))
@@ -221,7 +243,8 @@ def run_signals(provider: Any) -> int:
         closed = s.closed_at.strftime("%Y-%m-%d %H:%M") if s.closed_at else "open"
         open_price = f"{s.open_price:.2f}" if s.open_price is not None else "--"
         close_price = f"{s.close_price:.2f}" if s.close_price is not None else "--"
-        print(f"{s.id:>4}  {s.ticker:<7}{s.kind:<10}{s.label:<12}{s.direction:>4}  {opened:<17}{open_price:>9}  {closed:<17}{close_price:>9}  {s.note}")
+        outcome = "" if s.outcome is None else ("  WIN" if s.outcome else "  LOSS")
+        print(f"{s.id:>4}  {s.ticker:<7}{s.kind:<10}{s.label:<12}{s.direction:>4}  {opened:<17}{open_price:>9}  {closed:<17}{close_price:>9}  {s.note}{outcome}" + (f" ({s.score_note})" if s.score_note else ""))
     return 0
 
 
@@ -281,6 +304,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_universe(provider, watchlist)
     if args.signals:
         return run_signals(provider)
+    if args.validity:
+        return run_validity(provider, watchlist)
     if args.rededupe:
         originals, duplicates = provider.store.rededupe()
         print(f"news store re-deduplicated: {originals} originals, {duplicates} duplicates")

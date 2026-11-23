@@ -46,6 +46,9 @@ from .provider import Board, Provider
 from .quant.engine import QuantBoard
 from .quant.options import options_explain, options_summary
 from .quant.scoring import explain_text, score_summary
+from .quant.store import LONG_TERM, OPTIONS
+from .quant.validity import validity_explain, validity_summary
+from rich.text import Text
 from .relationships import catalyst_label
 from .watchlist import Watchlist
 
@@ -147,6 +150,7 @@ class StockTerminalApp(App[None]):
     TITLE = "Stock Terminal: read-only, no orders, ever"
     CSS = """
     #top-strip { height: auto; padding: 0 1; background: $panel; border-bottom: solid $primary; }
+    #banner { height: auto; padding: 0 1; background: $error; color: $text; display: none; }
     #main { height: 1fr; }
     #watchlist { width: 46%; min-width: 66; }
     #news { width: 1fr; min-width: 20; border-left: solid $primary; }
@@ -193,6 +197,7 @@ class StockTerminalApp(App[None]):
         self.news_head_text = "News: loading..."
         self.score_text = ""
         self.options_text = ""
+        self.validity_text = ""
         self.shown_entries: list[FeedEntry] = []
         self.strip_text = "Loading..."
         self._log_lines: Deque[str] = deque(maxlen=500)
@@ -202,6 +207,7 @@ class StockTerminalApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Header()  # no clock: the strip's Refreshed stamp, in ET, is the time of record
         yield Static(self.strip_text, id="top-strip")
+        yield Static("", id="banner")
         with Horizontal(id="main"):
             yield DataTable(id="watchlist")
             with Vertical(id="news"):
@@ -215,10 +221,8 @@ class StockTerminalApp(App[None]):
                     with VerticalScroll():
                         yield Static("Options: loading...", id="options-pane")
                 with TabPane("Validity", id="tab-validity"):
-                    yield Static(
-                        "Validity engine arrives in Phase 5. Until 30 signals are scored, every label reads UNPROVEN.",
-                        id="validity-pane",
-                    )
+                    with VerticalScroll():
+                        yield Static("Validity: loading...", id="validity-pane")
         with Collapsible(title="Log (l to toggle)", collapsed=True, id="log-panel"):
             yield RichLog(id="log", max_lines=500, wrap=True, markup=False)
         yield Footer()
@@ -311,8 +315,12 @@ class StockTerminalApp(App[None]):
         self.quant_status = f"score: {quant_board.status}"
         for event in quant_board.signals:
             self.notify(f"Label change: {event}", title="Signal logged")
+        for event in quant_board.scored:
+            self.notify(event, title="Signal scored")
+        self._render_banner()
         self._render_table()
         self._render_score()
+        self._render_validity()
 
     def set_quant_status(self, text: str) -> None:
         self.quant_status = text
@@ -368,11 +376,32 @@ class StockTerminalApp(App[None]):
         except Exception:  # noqa: BLE001  cursor off the table during a redraw
             return None
 
+    def _cell(self, text: str) -> Any:
+        """In virtual mode the labels are greyed out: the book's rule, keep recording, stop trusting."""
+        if self.quant_board is not None and self.quant_board.virtual_mode:
+            return Text(text, style="dim strike")
+        return text
+
     def _lt_label(self, ticker: str) -> str:
         if self.quant_board is None:
             return "..."
         score = self.quant_board.scores.get(ticker)
         return score.short_label if score is not None else "--"
+
+    def _validity_label(self) -> str:
+        if self.quant_board is None:
+            return VALIDITY_PLACEHOLDER
+        return self.quant_board.validity_text(LONG_TERM)
+
+    def _render_banner(self) -> None:
+        banner = self.query_one("#banner", Static)
+        board = self.quant_board
+        if board is None or not board.virtual_mode:
+            banner.display = False
+            return
+        kinds = [k.replace("_", "-") for k, r in board.validity.items() if r.virtual_mode]
+        banner.update(f"VIRTUAL MODE: the {' and '.join(kinds)} labels test as RANDOM-LIKE. The app keeps recording them; stop trusting them until the tests say otherwise. Details in the Validity tab.")
+        banner.display = True
 
     def _opt_label(self, ticker: str) -> str:
         if self.quant_board is None:
@@ -405,8 +434,8 @@ class StockTerminalApp(App[None]):
                 data = "ok" if quote.price.status == FRESH else quote.price.status.upper()
             table.add_row(
                 ticker, price, change,
-                self._lt_label(ticker), self._opt_label(ticker), self._earn_label(ticker),
-                VALIDITY_PLACEHOLDER, data,
+                self._cell(self._lt_label(ticker)), self._cell(self._opt_label(ticker)), self._earn_label(ticker),
+                self._validity_label(), data,
                 key=ticker,
             )
         if selected in self.watchlist.tickers:
@@ -465,7 +494,7 @@ class StockTerminalApp(App[None]):
             lines.append(f"{ticker}: score not computed yet.")
         else:
             score = self.quant_board.scores.get(ticker)
-            lines.append(score_summary(score) if score is not None else f"{ticker}: No score yet.")
+            lines.append(score_summary(score, self.quant_board.validity_text(LONG_TERM)) if score is not None else f"{ticker}: No score yet.")
             for note in self.quant_board.notes:
                 lines.append(f"[yellow]{escape(note)}[/]")
         self.score_text = "\n".join(lines)
@@ -480,9 +509,18 @@ class StockTerminalApp(App[None]):
             lines.append(f"{ticker}: options check not computed yet.")
         else:
             result = self.quant_board.options.get(ticker)
-            lines.append(options_summary(result) if result is not None else f"{ticker}: No options check yet.")
+            lines.append(options_summary(result, self.quant_board.validity_text(OPTIONS)) if result is not None else f"{ticker}: No options check yet.")
         self.options_text = "\n".join(lines)
         self.query_one("#options-pane", Static).update(self.options_text)
+
+    def _render_validity(self) -> None:
+        board = self.quant_board
+        if board is None:
+            self.validity_text = "Validity: loading..."
+        else:
+            parts = [validity_summary(board.validity.get(LONG_TERM)), "", validity_summary(board.validity.get(OPTIONS)), "", validity_explain()]
+            self.validity_text = "\n".join(parts)
+        self.query_one("#validity-pane", Static).update(self.validity_text)
 
     # ----- actions -----
     def action_add_ticker(self) -> None:
@@ -539,10 +577,10 @@ class StockTerminalApp(App[None]):
         if score is None:
             self.notify(f"No score to explain yet ({self.quant_status})", severity="warning")
             return
-        text = explain_text(score, self.quant_board.universe_name)
+        text = explain_text(score, self.quant_board.universe_name, self.quant_board.validity_text(LONG_TERM))
         result = self.quant_board.options.get(ticker)
         if result is not None:
-            text += "\n\n" + options_explain(result)
+            text += "\n\n" + options_explain(result, self.quant_board.validity_text(OPTIONS))
         self.push_screen(ExplainScreen(text))
 
     def action_toggle_log(self) -> None:

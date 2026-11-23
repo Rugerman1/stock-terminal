@@ -90,6 +90,14 @@ DEFAULTS: dict[str, Any] = {
         "news_days": 7,
         "news_min_headlines": 3,
     },
+    "validity": {
+        "min_signals": 30,
+        "window": 50,
+        "random_like_above": 0.05,
+        "significant_below": 0.01,
+        "monte_carlo_runs": 10000,
+        "seed": 42,
+    },
     "cache": {
         "path": "data/terminal.db",
         "ttl_seconds": {
@@ -181,6 +189,10 @@ def validate(cfg: Mapping[str, Any]) -> None:
         raise ConfigError("options.enabled must be true or false")
     if not isinstance(cfg["options"]["rate_series"], str) or not cfg["options"]["rate_series"]:
         raise ConfigError("options.rate_series must be a FRED series id")
+    for name in ("min_signals", "window", "random_like_above", "significant_below", "monte_carlo_runs"):
+        _positive(cfg, "validity", name)
+    if not 0 < cfg["validity"]["significant_below"] < cfg["validity"]["random_like_above"] < 1:
+        raise ConfigError("validity.significant_below must be below validity.random_like_above, both between 0 and 1")
     equities = cfg["top_strip"]["equities"]
     if not isinstance(equities, list) or not all(isinstance(s, str) and s for s in equities):
         raise ConfigError("top_strip.equities must be a list of ticker strings")

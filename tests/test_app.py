@@ -10,6 +10,8 @@ from stock_terminal.provider import Board
 from stock_terminal.quant.engine import QuantBoard
 from stock_terminal.quant.options import Contract, DirectionScore, OptionsResult
 from stock_terminal.quant.scoring import FactorScore, Score
+from stock_terminal.quant.validity import RANDOM_LIKE, ValidityReport
+from stock_terminal.quant.validity import TestResult as VTestResult   # aliased so pytest does not try to collect it
 from stock_terminal.watchlist import Watchlist
 
 
@@ -18,11 +20,12 @@ def news_item(item_id, headline, hours_ago, symbols=(), sentiment=None, url=""):
 
 
 class FakeProvider:
-    def __init__(self, missing=()):
+    def __init__(self, missing=(), random_like=False):
         self.calls = []
         self.news_calls = []
         self.quant_calls = []
         self.missing = set(missing)
+        self.random_like = random_like
 
     def refresh(self, symbols):
         self.calls.append(list(symbols))
@@ -68,7 +71,12 @@ class FakeProvider:
         direction = DirectionScore(1.4, {"63-day return": {"raw": 0.2, "z": 1.4, "mean": 0.05, "std": 0.1, "n": 101, "note": ""}}, 1.0)
         options = OptionsResult("AAPL", "Call candidate", "call", direction, contract, metrics={"dte": 49, "iv": 0.2667, "iv_source": "feed", "hv20": 0.3, "hv60": 0.25, "vol_ratio": 1.07, "iv_rank": None, "iv_days": 1, "expected_move": 33.0, "expected_move_pct": 9.7, "breakeven": 357.3, "needed_move_pct": 4.0, "pop_market": 38.0, "pop_model": 35.0, "expected_value": -40.0, "simulations": 20000, "max_loss": 1230.0, "greeks": {"delta": 0.5352}, "greeks_source": "feed", "rate": 0.0434}, checks={"direction": (True, "z +1.40"), "vol ratio": (True, "IV/HV60 1.07 (limit 1.2)"), "move": (True, "needs 4.0%, expected 9.7%"), "liquidity": (True, "OI 1200, spread 6.7% of mid")})
         earnings = {"AAPL": DataPoint("2027-01-27", "finnhub/earnings-calendar", FRESH, as_of=datetime(2027, 1, 27, tzinfo=timezone.utc))}
-        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"], options={"AAPL": options} if "AAPL" in tickers else {}, earnings=earnings if "AAPL" in tickers else {})
+        if self.random_like:
+            lt_report = ValidityReport("long_term", RANDOM_LIKE, 40, 2, 30, 50, binomial=VTestResult(40, 21, 0.44, 0.5), notes=[])
+        else:
+            lt_report = ValidityReport("long_term", "UNPROVEN", 3, 2, 30, 50, binomial=VTestResult(3, 2, 0.5, 0.5), notes=[])
+        validity = {"long_term": lt_report, "options": ValidityReport("options", "UNPROVEN", 0, 1, 30, 50, notes=["no scored signals yet"])}
+        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"], options={"AAPL": options} if "AAPL" in tickers else {}, earnings=earnings if "AAPL" in tickers else {}, validity=validity, scored=["AAPL long_term Favorable 2026-08-01 to 2026-11-02: win (vs SPY)"] if "AAPL" in tickers else [])
         if on_board:
             on_board(board)
         return board
@@ -115,7 +123,7 @@ async def test_table_and_strip_render(tmp_path, cfg):
         assert table.row_count == 2
         first = [str(c) for c in table.get_row_at(0)]
         assert first[0] == "AAPL" and first[1] == "102.00" and first[2] == "+1.00%"
-        assert first[6] == "UNPROVEN 0/30" and first[7] == "ok"
+        assert first[6] == "UNPROVEN 3/30" and first[7] == "ok"
         assert provider.calls == [["SPY", "QQQ", "AAPL", "MSFT"]]
         assert "SPY 100.00" in app.strip_text and "VIX 18.70" in app.strip_text and "10Y 5.10%" in app.strip_text
         assert "Market CLOSED" in app.strip_text and "Newest IEX trade" in app.strip_text
@@ -173,6 +181,10 @@ async def test_score_column_pane_and_explain(tmp_path, cfg):
         assert str(table.get_row_at(0)[4]) == "CALL" and str(table.get_row_at(1)[4]) == "--"
         assert str(table.get_row_at(0)[5]).endswith("d") and str(table.get_row_at(1)[5]) == "--"
         assert "AAPL  Call candidate" in app.options_text and "AAPL270108C00345000" in app.options_text
+        assert str(table.get_row_at(0)[6]) == "UNPROVEN 3/30"
+        assert not app.query_one("#banner", Static).display
+        assert "long_term" in app.validity_text and "UNPROVEN" in app.validity_text and "How the honesty check works" in app.validity_text
+        assert "validity UNPROVEN 3/30" in app.score_text
         assert app.quant_status.startswith("score: scored 98 of 101")
         assert "Favorable" in app.score_text and "composite +1.20" in app.score_text and "88th pct of 98" in app.score_text
         await pilot.press("question_mark")
@@ -191,6 +203,20 @@ async def test_score_column_pane_and_explain(tmp_path, cfg):
         await pilot.press("question_mark")
         await pilot.pause()
         assert not isinstance(app.screen, ExplainScreen)
+
+
+async def test_random_like_shows_the_banner_and_greys_the_labels(tmp_path, cfg):
+    app, _ = make_app(tmp_path, cfg, FakeProvider(random_like=True))
+    async with app.run_test(size=(180, 50)) as pilot:
+        await settle(app, pilot)
+        banner = app.query_one("#banner", Static)
+        assert banner.display and "VIRTUAL MODE" in str(banner.render())
+        table = app.query_one("#watchlist", DataTable)
+        assert str(table.get_row_at(0)[6]) == "RANDOM-LIKE"
+        from rich.text import Text
+        cell = table.get_row_at(0)[3]
+        assert isinstance(cell, Text) and str(cell) == "FAV" and "dim" in str(cell.style)
+        assert "Virtual mode" in app.validity_text
 
 
 async def test_add_and_delete_keys(tmp_path, cfg):

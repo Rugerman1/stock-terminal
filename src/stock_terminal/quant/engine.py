@@ -38,7 +38,9 @@ from ..news.store import NewsStore
 from .factors import low_risk, mean_std, momentum, news_sentiment, quality_components, recent_news_sentiment, return_63, trend, value, vs_50d_average, zscore
 from .options import CALL, CALL_CANDIDATE, NO_TRADE, PUT, PUT_CANDIDATE, DirectionScore, OptionsCheck, OptionsResult, contracts_from_payload
 from .scoring import RawFactors, Score, score_all
-from .store import OPTIONS, MarketStore
+from .signal_scorer import SignalScorer
+from .store import LONG_TERM, OPTIONS, MarketStore
+from .validity import ValidityReport, build_report
 
 Progress = Optional[Callable[[str], None]]
 
@@ -57,6 +59,16 @@ class QuantBoard:
     complete: bool = True                                    # False while the universe-news pass is still to come
     options: dict[str, OptionsResult] = field(default_factory=dict)   # the call / put check per watchlist ticker
     earnings: dict[str, DataPoint] = field(default_factory=dict)      # next earnings date per watchlist ticker
+    validity: dict[str, ValidityReport] = field(default_factory=dict) # "long_term" and "options" reports
+    scored: list[str] = field(default_factory=list)                   # signals scored this run
+
+    def validity_text(self, kind: str) -> str:
+        report = self.validity.get(kind)
+        return report.column_text if report is not None else "UNPROVEN 0/30"
+
+    @property
+    def virtual_mode(self) -> bool:
+        return any(r.virtual_mode for r in self.validity.values())
 
 
 def load_universe(path: str | Path) -> tuple[str, list[str]]:
@@ -300,6 +312,13 @@ class QuantEngine:
                 result = self._options_for(ticker, raw, direction_stats, earnings[ticker], now)
                 options[ticker] = result
                 events.extend(self._log_options_signal(ticker, result, raw.price, now))
+        # The honesty check: score what is due, then the three tests per signal kind.
+        scorer = SignalScorer(self.store, members, int(self.q["history_days"]), as_of=now.date())
+        scored_events = scorer.score_due(now)
+        validity = {
+            kind: build_report(kind, scorer.scored(kind), self.store.open_count(kind), self.cfg["validity"], scorer.gap_outcome)
+            for kind in (LONG_TERM, OPTIONS)
+        }
         any_score = next(iter(scores.values()), None)
         scored_n = any_score.scored_n if any_score else 0
         as_of = max((s.as_of for s in scores.values() if s.as_of), default=None)
@@ -313,6 +332,7 @@ class QuantEngine:
             scores={t: scores[t] for t in tickers if t in scores},
             universe_name=universe_name, universe_n=len(members), scored_n=scored_n, as_of=as_of, run_at=now,
             status=status, notes=list(notes), signals=events, complete=complete, options=options, earnings=earnings,
+            validity=validity, scored=scored_events,
         )
 
     # ----- the options check -----
@@ -375,7 +395,7 @@ class QuantEngine:
         events: list[str] = []
         if result.label in (CALL_CANDIDATE, PUT_CANDIDATE) and result.contract is not None:
             previous = self.store.open_signal(ticker, OPTIONS)
-            signal = self.store.record_label(ticker, result.label, price, now, int(result.metrics.get("dte") or 1), OPTIONS, detail=result.contract.symbol)
+            signal = self.store.record_label(ticker, result.label, price, now, int(result.metrics.get("dte") or 1), OPTIONS, detail=result.contract.symbol, target=result.metrics.get("breakeven"))
             if signal is not None:
                 before = f"{previous.label} ({previous.note})" if previous else "none"
                 events.append(f"{ticker} options: {before} -> {result.label} ({result.contract.symbol})")
