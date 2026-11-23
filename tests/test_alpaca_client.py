@@ -78,6 +78,34 @@ class FakeTrading:
         return SimpleNamespace(is_open=False, timestamp=NOW, next_open=NOW + timedelta(hours=12), next_close=NOW + timedelta(hours=19))
 
 
+class FakeBars:
+    def __init__(self):
+        self.requests = []
+
+    def get_stock_bars(self, request):
+        self.requests.append(request)
+        rows = {
+            s: [SimpleNamespace(timestamp=NOW - timedelta(days=2), close=100.0 + i), SimpleNamespace(timestamp=NOW - timedelta(days=1), close=101.0 + i)]
+            for i, s in enumerate(request.symbol_or_symbols)
+            if s != "NOPE"
+        }
+        return SimpleNamespace(data=rows)
+
+
+def test_daily_closes_for_many_symbols(cfg, cache):
+    bars = FakeBars()
+    client = AlpacaClient(Keys(), cache, cfg, data_client=bars, trading_client=FakeTrading())
+    dp = client.daily_closes(["msft", "AAPL", "NOPE"], NOW - timedelta(days=10), NOW)
+    assert dp.ok and dp.source == "alpaca/iex/daily"
+    assert dp.value["AAPL"] == [{"t": (NOW - timedelta(days=2)).date().isoformat(), "c": 100.0}, {"t": (NOW - timedelta(days=1)).date().isoformat(), "c": 101.0}]
+    assert dp.value["NOPE"] == []
+    request = bars.requests[0]
+    assert request.symbol_or_symbols == ["AAPL", "MSFT", "NOPE"] and request.adjustment.value == "split" and str(request.timeframe) == "1Day"
+    client.daily_closes(["AAPL", "MSFT", "NOPE"], NOW - timedelta(days=10), NOW)
+    assert len(bars.requests) == 1                                    # cached
+    assert AlpacaClient(Keys(), cache, cfg).daily_closes(["AAPL"], NOW - timedelta(days=10), NOW).status == MISSING
+
+
 def test_snapshots_with_fake_client_and_cache(cfg, cache):
     data = FakeData()
     client = AlpacaClient(Keys(), cache, cfg, data_client=data, trading_client=FakeTrading())

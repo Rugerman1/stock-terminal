@@ -36,6 +36,9 @@ def make_client(cfg, cache, key="k"):
             body = [{"id": 8, "datetime": STAMP - 120, "headline": "Fed holds rates", "url": "", "source": "CNBC", "related": "", "summary": ""}]
         elif path.endswith("/stock/peers"):
             body = ["AAPL", "MSFT", "DELL", "HPQ"]
+        elif path.endswith("/stock/metric"):
+            assert request.url.params["metric"] == "all"
+            body = {"metric": {"epsTTM": 8.97, "peTTM": 37.6, "roeTTM": 127.6, "grossMarginTTM": 48.79, "52WeekHigh": 400.0, "pfcfShareTTM": None}, "series": {}}
         else:
             return httpx.Response(404)
         return httpx.Response(200, content=json.dumps(body))
@@ -55,6 +58,15 @@ def test_company_general_and_peers(cfg, cache):
     assert peers.ok and peers.value == ["MSFT", "DELL", "HPQ"]       # the symbol itself is dropped
     client.company_news("AAPL", NOW - timedelta(days=7), NOW)
     assert len(seen) == 3                                             # cached inside the TTL
+
+
+def test_metrics_keep_only_the_fields_the_score_uses(cfg, cache):
+    client, seen = make_client(cfg, cache)
+    dp = client.metrics("aapl")
+    assert dp.ok and dp.value == {"epsTTM": 8.97, "peTTM": 37.6, "roeTTM": 127.6, "grossMarginTTM": 48.79}
+    client.metrics("AAPL")
+    assert len(seen) == 1                                             # cached for a day
+    assert FinnhubClient(Keys(), cache, cfg).metrics("AAPL").status == MISSING
 
 
 def test_without_key_is_missing(cfg, cache):

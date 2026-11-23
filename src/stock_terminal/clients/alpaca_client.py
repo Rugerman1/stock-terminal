@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
 
-from alpaca.data.enums import DataFeed
+from alpaca.data.enums import Adjustment, DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
 from alpaca.data.timeframe import TimeFrame
@@ -99,6 +99,7 @@ class AlpacaClient(BaseClient):
         self.ttl_snapshot = cfg["cache"]["ttl_seconds"]["snapshot"]
         self.ttl_clock = cfg["cache"]["ttl_seconds"]["clock"]
         self.ttl_bars = cfg["cache"]["ttl_seconds"]["bars"]
+        self.ttl_bars_daily = cfg["cache"]["ttl_seconds"]["bars_daily"]
         self.delayed_after = cfg["alpaca"]["delayed_after_seconds"]
         self.enabled = keys.has_alpaca
         if data_client is not None or trading_client is not None:
@@ -189,3 +190,31 @@ class AlpacaClient(BaseClient):
         data = getattr(result, "data", result)
         rows = data.get(symbol, []) if hasattr(data, "get") else []
         return [{"t": bar.timestamp.isoformat(), "c": float(bar.close)} for bar in rows]
+
+    # ----- daily closes for many symbols (the score's universe) -----
+    def daily_closes(self, symbols: list[str], start: datetime, end: datetime) -> DataPoint:
+        """Split-adjusted daily closes: {symbol: [{"t": date, "c": close}]}. One request per 100 symbols; alpaca-py pages."""
+        wanted = sorted({s.upper() for s in symbols if s})
+        source = f"{self.source}/daily"
+        if not wanted:
+            return DataPoint({}, source, FRESH)
+        if not self.enabled:
+            return DataPoint.missing(source, NO_KEY)
+        end = min(end, utcnow() - timedelta(minutes=16))
+        key = f"alpaca:daily:{hash(tuple(wanted)) & 0xFFFFFFFF:08x}:{len(wanted)}:{start.date()}:{end.strftime('%Y%m%dT%H%M')}"
+        return self.fetch_cached(key, self.ttl_bars_daily, lambda: self._fetch_daily(wanted, start, end), source)
+
+    def _fetch_daily(self, symbols: list[str], start: datetime, end: datetime) -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {s: [] for s in symbols}
+        for i in range(0, len(symbols), 100):
+            chunk = symbols[i : i + 100]
+            request = StockBarsRequest(
+                symbol_or_symbols=chunk, timeframe=TimeFrame.Day, start=start, end=end,
+                feed=self.feed, adjustment=Adjustment.SPLIT, limit=10_000,
+            )
+            result = self._data.get_stock_bars(request)
+            data = getattr(result, "data", result)
+            for symbol in chunk:
+                rows = data.get(symbol, []) if hasattr(data, "get") else []
+                out[symbol] = [{"t": bar.timestamp.date().isoformat(), "c": float(bar.close)} for bar in rows]
+        return out

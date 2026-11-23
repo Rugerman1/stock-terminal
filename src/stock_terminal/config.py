@@ -58,6 +58,21 @@ DEFAULTS: dict[str, Any] = {
         "model": "ProsusAI/finbert",
         "batch_size": 16,
     },
+    "quant": {
+        "refresh_seconds": 3600,
+        "universe_path": "universe.yaml",
+        "universe_ttl_seconds": 86400,
+        "history_days": 400,
+        "label_top_pct": 20,
+        "label_bottom_pct": 20,
+        "zscore_cap": 3,
+        "weights": {"momentum": 0.30, "trend": 0.10, "value": 0.20, "quality": 0.25, "low_risk": 0.10, "news": 0.05},
+        "news_halflife_days": 3,
+        "news_min_headlines": 5,
+        "news_window_days": 30,
+        "universe_news": True,
+        "signal_horizon_days": 63,
+    },
     "cache": {
         "path": "data/terminal.db",
         "ttl_seconds": {
@@ -69,6 +84,8 @@ DEFAULTS: dict[str, Any] = {
             "bars": 3600,
             "peers": 86400,
             "cik": 604800,
+            "metrics": 86400,
+            "bars_daily": 300,
         },
     },
     "log": {
@@ -117,8 +134,24 @@ def validate(cfg: Mapping[str, Any]) -> None:
     if not isinstance(cfg["sentiment"]["enabled"], bool):
         raise ConfigError("sentiment.enabled must be true or false")
     _positive(cfg, "sentiment", "batch_size")
-    for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik"):
+    for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik", "metrics", "bars_daily"):
         _positive(cfg, "cache", "ttl_seconds", name)
+    for name in ("refresh_seconds", "universe_ttl_seconds", "history_days", "zscore_cap", "news_halflife_days", "news_min_headlines", "news_window_days", "signal_horizon_days"):
+        _positive(cfg, "quant", name)
+    for name in ("label_top_pct", "label_bottom_pct"):
+        pct = cfg["quant"][name]
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool) or not 0 < pct <= 50:
+            raise ConfigError(f"quant.{name} must be between 0 and 50, got {pct!r}")
+    weights = cfg["quant"]["weights"]
+    expected = ("momentum", "trend", "value", "quality", "low_risk", "news")
+    if not isinstance(weights, Mapping) or set(weights) != set(expected):
+        raise ConfigError(f"quant.weights must have exactly these keys: {', '.join(expected)}")
+    if any(not isinstance(w, (int, float)) or isinstance(w, bool) or w < 0 for w in weights.values()) or sum(weights.values()) <= 0:
+        raise ConfigError("quant.weights must be non-negative numbers that do not all equal zero")
+    if not isinstance(cfg["quant"]["universe_news"], bool):
+        raise ConfigError("quant.universe_news must be true or false")
+    if not isinstance(cfg["quant"]["universe_path"], str) or not cfg["quant"]["universe_path"]:
+        raise ConfigError("quant.universe_path must be a file path")
     equities = cfg["top_strip"]["equities"]
     if not isinstance(equities, list) or not all(isinstance(s, str) and s for s in equities):
         raise ConfigError("top_strip.equities must be a list of ticker strings")

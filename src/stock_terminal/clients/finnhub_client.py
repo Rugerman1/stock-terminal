@@ -22,6 +22,11 @@ from .base import BaseClient
 
 BASE_URL = "https://finnhub.io/api/v1"
 NO_KEY = "no Finnhub key in .env"
+# The fundamentals the score uses, from /stock/metric?metric=all (133 fields on the free plan, checked live 2026-11-22).
+METRIC_KEYS = (
+    "epsTTM", "peTTM", "pfcfShareTTM", "currentEv/freeCashFlowTTM", "roeTTM", "grossMarginTTM",
+    "totalDebt/totalEquityAnnual", "totalDebt/totalEquityQuarterly", "marketCapitalization", "beta",
+)
 
 
 def items_from_payload(payload: Optional[list[dict[str, Any]]], limit: int = 50) -> list[NewsItem]:
@@ -63,6 +68,7 @@ class FinnhubClient(BaseClient):
         super().__init__(cache, RateLimiter.per_minute(cfg["finnhub"]["calls_per_minute"]), logger)
         self.ttl_news = cfg["cache"]["ttl_seconds"]["news"]
         self.ttl_peers = cfg["cache"]["ttl_seconds"]["peers"]
+        self.ttl_metrics = cfg["cache"]["ttl_seconds"]["metrics"]
         self.limit = int(cfg["news"]["per_source_limit"])
         self.enabled = keys.has_finnhub
         headers = {"X-Finnhub-Token": keys.finnhub} if keys.finnhub else {}
@@ -103,6 +109,21 @@ class FinnhubClient(BaseClient):
             lambda: [str(p).upper() for p in self._get("/stock/peers", {"symbol": symbol}) if str(p).upper() != symbol],
             source,
         )
+
+    def metrics(self, symbol: str) -> DataPoint:
+        """Basic financials for the value and quality factors. The value is a dict of the METRIC_KEYS that were present."""
+        symbol = symbol.upper()
+        source = "finnhub/metric"
+        if not self.enabled:
+            return DataPoint.missing(source, NO_KEY)
+        return self.fetch_cached(f"finnhub:metric:{symbol}", self.ttl_metrics, lambda: self._fetch_metrics(symbol), source)
+
+    def _fetch_metrics(self, symbol: str) -> dict[str, Any]:
+        payload = self._get("/stock/metric", {"symbol": symbol, "metric": "all"})
+        metric = payload.get("metric") if isinstance(payload, dict) else None
+        if not isinstance(metric, dict):
+            raise ValueError(f"Finnhub returned no metric block for {symbol}")
+        return {k: metric.get(k) for k in METRIC_KEYS if metric.get(k) is not None}
 
     def _trim(self, payload: Any) -> list[dict[str, Any]]:
         """Keep only the fields the app uses, newest first, at most `limit` items, so the cache stays small."""

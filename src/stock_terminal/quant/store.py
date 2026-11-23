@@ -1,0 +1,216 @@
+"""Market data kept for the quant read: daily closes, every score run, and the signal log.
+
+Same SQLite file as the cache and the news (data/terminal.db). Daily bars accumulate
+forward so a year of history is pulled once and topped up; scores are kept per run so
+the backtest and the validity engine can look back; the signal log records a label
+only when it changes (one open long-term signal per ticker), which is design call 1 in
+the project note.
+"""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from ..datapoint import utcnow
+from ..news.models import iso, parse_when
+
+SCHEMA = (
+    """
+    CREATE TABLE IF NOT EXISTS daily_bars (
+        symbol TEXT NOT NULL,
+        date TEXT NOT NULL,
+        close REAL NOT NULL,
+        PRIMARY KEY (symbol, date)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS scores (
+        run_at TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        as_of TEXT,
+        composite REAL,
+        label TEXT,
+        percentile REAL,
+        factors TEXT NOT NULL,
+        PRIMARY KEY (run_at, symbol)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        label TEXT NOT NULL,
+        direction INTEGER NOT NULL,
+        opened_at TEXT NOT NULL,
+        open_price REAL,
+        horizon_days INTEGER NOT NULL,
+        closed_at TEXT,
+        close_price REAL,
+        outcome INTEGER,
+        note TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS signals_open ON signals(ticker, kind, closed_at)",
+)
+
+LONG_TERM = "long_term"
+DIRECTIONS = {"Favorable": 1, "Unfavorable": -1, "Neutral": 0}
+
+
+@dataclass
+class Signal:
+    id: int
+    ticker: str
+    kind: str
+    label: str
+    direction: int
+    opened_at: datetime
+    open_price: Optional[float]
+    horizon_days: int
+    closed_at: Optional[datetime] = None
+    close_price: Optional[float] = None
+    outcome: Optional[int] = None
+    note: str = ""
+
+
+class MarketStore:
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        with self._connect() as con:
+            for statement in SCHEMA:
+                con.execute(statement)
+
+    def _connect(self) -> sqlite3.Connection:
+        con = sqlite3.connect(self.path, timeout=10)
+        con.row_factory = sqlite3.Row
+        return con
+
+    # ----- daily bars -----
+    def upsert_bars(self, symbol: str, rows: Iterable[tuple[str, float]]) -> int:
+        """rows: (date 'YYYY-MM-DD', close). Returns how many rows were written."""
+        data = [(symbol.upper(), d, float(c)) for d, c in rows]
+        if not data:
+            return 0
+        with self._lock, self._connect() as con:
+            con.executemany("INSERT OR REPLACE INTO daily_bars (symbol, date, close) VALUES (?, ?, ?)", data)
+        return len(data)
+
+    def last_bar_date(self, symbol: str) -> Optional[str]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT MAX(date) FROM daily_bars WHERE symbol = ?", (symbol.upper(),)).fetchone()
+        return row[0] if row and row[0] else None
+
+    def closes(self, symbol: str, limit: int = 400) -> list[tuple[str, float]]:
+        """The newest `limit` closes for a symbol, oldest first."""
+        with self._lock, self._connect() as con:
+            rows = con.execute(
+                "SELECT date, close FROM daily_bars WHERE symbol = ? ORDER BY date DESC LIMIT ?", (symbol.upper(), limit)
+            ).fetchall()
+        return [(r["date"], float(r["close"])) for r in reversed(rows)]
+
+    def closes_many(self, symbols: Iterable[str], limit: int = 400) -> dict[str, list[tuple[str, float]]]:
+        return {s.upper(): self.closes(s, limit) for s in symbols}
+
+    def bar_counts(self) -> dict[str, int]:
+        with self._lock, self._connect() as con:
+            rows = con.execute("SELECT symbol, COUNT(*) AS n FROM daily_bars GROUP BY symbol").fetchall()
+        return {r["symbol"]: int(r["n"]) for r in rows}
+
+    # ----- scores -----
+    def save_scores(self, run_at: datetime, rows: Iterable[dict[str, Any]]) -> None:
+        """rows: {symbol, as_of, composite, label, percentile, factors (JSON-able)}."""
+        stamp = iso(run_at)
+        data = [
+            (stamp, r["symbol"].upper(), r.get("as_of"), r.get("composite"), r.get("label"), r.get("percentile"), json.dumps(r.get("factors") or {}))
+            for r in rows
+        ]
+        with self._lock, self._connect() as con:
+            con.executemany(
+                "INSERT OR REPLACE INTO scores (run_at, symbol, as_of, composite, label, percentile, factors) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                data,
+            )
+
+    def latest_run(self) -> Optional[datetime]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT MAX(run_at) FROM scores").fetchone()
+        return parse_when(row[0]) if row and row[0] else None
+
+    def latest_scores(self) -> dict[str, dict[str, Any]]:
+        with self._lock, self._connect() as con:
+            row = con.execute("SELECT MAX(run_at) FROM scores").fetchone()
+            if not row or not row[0]:
+                return {}
+            rows = con.execute("SELECT * FROM scores WHERE run_at = ?", (row[0],)).fetchall()
+        out = {}
+        for r in rows:
+            out[r["symbol"]] = {
+                "run_at": r["run_at"], "as_of": r["as_of"], "composite": r["composite"], "label": r["label"],
+                "percentile": r["percentile"], "factors": json.loads(r["factors"] or "{}"),
+            }
+        return out
+
+    def score_runs(self, symbol: str) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as con:
+            rows = con.execute("SELECT run_at, as_of, composite, label FROM scores WHERE symbol = ? ORDER BY run_at", (symbol.upper(),)).fetchall()
+        return [dict(r) for r in rows]
+
+    # ----- signals -----
+    def open_signal(self, ticker: str, kind: str = LONG_TERM) -> Optional[Signal]:
+        with self._lock, self._connect() as con:
+            row = con.execute(
+                "SELECT * FROM signals WHERE ticker = ? AND kind = ? AND closed_at IS NULL ORDER BY id DESC LIMIT 1",
+                (ticker.upper(), kind),
+            ).fetchone()
+        return self._signal(row) if row else None
+
+    def record_label(
+        self, ticker: str, label: str, price: Optional[float], at: datetime, horizon_days: int = 63, kind: str = LONG_TERM
+    ) -> Optional[Signal]:
+        """Open a new signal when the label differs from the open one (closing the old). Returns the new signal, or None."""
+        ticker = ticker.upper()
+        current = self.open_signal(ticker, kind)
+        if current is not None and current.label == label:
+            return None
+        with self._lock, self._connect() as con:
+            if current is not None:
+                con.execute(
+                    "UPDATE signals SET closed_at = ?, close_price = ?, note = ? WHERE id = ?",
+                    (iso(at), price, f"label changed to {label}", current.id),
+                )
+            cur = con.execute(
+                "INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note) VALUES (?, ?, ?, ?, ?, ?, ?, '')",
+                (ticker, kind, label, DIRECTIONS.get(label, 0), iso(at), price, horizon_days),
+            )
+            new_id = cur.lastrowid
+            row = con.execute("SELECT * FROM signals WHERE id = ?", (new_id,)).fetchone()
+        return self._signal(row)
+
+    def signals(self, ticker: Optional[str] = None, kind: Optional[str] = None) -> list[Signal]:
+        sql, params = "SELECT * FROM signals", []
+        clauses = []
+        if ticker:
+            clauses.append("ticker = ?"); params.append(ticker.upper())
+        if kind:
+            clauses.append("kind = ?"); params.append(kind)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id"
+        with self._lock, self._connect() as con:
+            rows = con.execute(sql, params).fetchall()
+        return [self._signal(r) for r in rows]
+
+    @staticmethod
+    def _signal(row: sqlite3.Row) -> Signal:
+        return Signal(
+            id=int(row["id"]), ticker=row["ticker"], kind=row["kind"], label=row["label"], direction=int(row["direction"]),
+            opened_at=parse_when(row["opened_at"]), open_price=row["open_price"], horizon_days=int(row["horizon_days"]),
+            closed_at=parse_when(row["closed_at"]), close_price=row["close_price"], outcome=row["outcome"], note=row["note"] or "",
+        )

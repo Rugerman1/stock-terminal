@@ -153,6 +153,31 @@ class NewsEngine:
             refreshed_at=now,
         )
 
+    def ingest_company_news(self, symbols: list[str], since: datetime, now: Optional[datetime] = None, progress: Any = None) -> dict[str, Any]:
+        """Pull Finnhub company news for symbols outside the watchlist (the score's universe), store and score it.
+
+        Returns counts and the symbols whose pull failed. Headlines land in the same store, so a universe name that is
+        also a peer shows up in the watchlist feeds."""
+        now = now or utcnow()
+        rmap = self.load_map()
+        collected: list[NewsItem] = []
+        failed: list[str] = []
+        for i, symbol in enumerate(symbols, 1):
+            items, dp = self.finnhub.company_news(symbol, since, now)
+            if not dp.ok:
+                failed.append(f"{symbol}: {dp.note}")
+            collected.extend(items)
+            if progress and (i % 10 == 0 or i == len(symbols)):
+                progress(f"universe news {i}/{len(symbols)}")
+        for item in collected:
+            if item.kind == KIND_NEWS:
+                item.catalyst = rmap.catalyst_of(item.headline)
+        new_items, duplicates = self.store.upsert_items(collected, now)
+        if progress and new_items:
+            progress(f"scoring {len(new_items)} new universe headlines")
+        self._score_unscored(since)
+        return {"pulled": len(collected), "new": len(new_items), "duplicates": duplicates, "failed": failed}
+
     def _score_unscored(self, since: datetime) -> None:
         unscored = self.store.unscored(since)
         if not unscored:

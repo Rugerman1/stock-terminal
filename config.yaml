@@ -40,6 +40,27 @@ sentiment:
   model: ProsusAI/finbert      # downloaded once by Hugging Face (about 440 MB), runs on the CPU
   batch_size: 16
 
+quant:                         # the long-term score (Phase 3)
+  refresh_seconds: 3600        # how often the score is recomputed while the screen is open
+  universe_path: universe.yaml # the reference universe (S&P 100); every factor is a z-score against it
+  universe_ttl_seconds: 86400  # "refreshed nightly": bars and fundamentals older than this are pulled again
+  history_days: 400            # calendar days of daily closes kept per symbol (252 trading days plus a buffer)
+  label_top_pct: 20            # top 20% of the universe by composite = Favorable
+  label_bottom_pct: 20         # bottom 20% = Unfavorable; the rest Neutral
+  zscore_cap: 3                # every z-score is capped at -3 and +3
+  weights:                     # starting guesses from the spec. Fixed. Never tune these to fit past data.
+    momentum: 0.30
+    trend: 0.10
+    value: 0.20
+    quality: 0.25
+    low_risk: 0.10
+    news: 0.05
+  news_halflife_days: 3        # a headline's weight in the news factor = 0.5 ^ (age in days / 3)
+  news_min_headlines: 5        # fewer scored DIRECT headlines than this = news factor missing
+  news_window_days: 30         # how far back DIRECT headlines count
+  universe_news: true          # pull Finnhub company news for every universe name so the news factor has a universe to compare with (about 100 calls a night)
+  signal_horizon_days: 63      # a long-term label is scored 63 trading days after it is produced (Phase 5)
+
 cache:
   path: data/terminal.db
   ttl_seconds:                 # TTL = time to live: how long a cached value is used before re-fetching
@@ -51,6 +72,8 @@ cache:
     bars: 3600                 # bars for the reaction tracker; a window in the past never changes
     peers: 86400               # Finnhub's peers list for --peers
     cik: 604800                # the SEC's ticker-to-CIK table, one week
+    metrics: 86400             # Finnhub fundamentals, one day
+    bars_daily: 300            # the universe daily-bars pull; the closes themselves are stored for good
 
 log:
   path: logs/terminal.log
