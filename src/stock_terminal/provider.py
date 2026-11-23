@@ -1,9 +1,10 @@
 """The data layer the screen talks to.
 
-One `refresh` call returns a Board: every quote the screen needs, the FRED values for
-the top strip, and the market clock. The screen never imports a client directly, so
-tests can hand it a fake provider and the real one can grow new sources in later
-phases without touching the UI.
+`refresh` returns a Board: every quote the screen needs, the FRED values for the top
+strip, and the market clock. `refresh_news` returns a NewsBoard: a tagged feed per
+watchlist ticker and the state of every news source. The screen never imports a
+client directly, so tests hand it a fake provider and the real one grows new sources
+in later phases without touching the UI.
 """
 from __future__ import annotations
 
@@ -14,9 +15,16 @@ from typing import Any, Optional, Protocol
 
 from .cache import Cache
 from .clients.alpaca_client import AlpacaClient, Quote
+from .clients.alpaca_news import AlpacaNewsClient
+from .clients.edgar_client import EdgarClient
+from .clients.finnhub_client import FinnhubClient
 from .clients.fred_client import FredClient
 from .config import Keys
 from .datapoint import DataPoint, utcnow
+from .news.engine import NewsEngine
+from .news.models import NewsBoard
+from .news.sentiment import build_scorer
+from .news.store import NewsStore
 
 
 @dataclass
@@ -44,12 +52,20 @@ class Board:
 class Provider(Protocol):
     def refresh(self, symbols: list[str]) -> Board: ...
 
+    def refresh_news(self, tickers: list[str]) -> NewsBoard: ...
+
 
 class LiveProvider:
     def __init__(self, cfg: dict[str, Any], keys: Keys, cache: Cache, logger: Optional[logging.Logger] = None) -> None:
         self.cfg = cfg
         self.alpaca = AlpacaClient(keys, cache, cfg, logger)
         self.fred = FredClient(keys, cache, cfg, logger)
+        self.alpaca_news = AlpacaNewsClient(keys, cache, cfg, logger)
+        self.finnhub = FinnhubClient(keys, cache, cfg, logger)
+        self.edgar = EdgarClient(keys, cache, cfg, logger)
+        self.store = NewsStore(cfg["cache"]["path"], cfg["news"]["dedupe_hours"], cfg["news"]["dedupe_similarity"])
+        self.scorer = build_scorer(cfg)
+        self.news = NewsEngine(cfg, self.store, self.scorer, self.alpaca, self.alpaca_news, self.finnhub, self.edgar, cache, logger)
 
     def refresh(self, symbols: list[str]) -> Board:
         clock = self.alpaca.clock()
@@ -57,3 +73,9 @@ class LiveProvider:
         quotes = self.alpaca.snapshots(symbols, market_open=market_open)
         fred = {label: self.fred.latest(series) for label, series in self.cfg["top_strip"]["fred"].items()}
         return Board(quotes=quotes, fred=fred, clock=clock)
+
+    def refresh_news(self, tickers: list[str]) -> NewsBoard:
+        return self.news.refresh(tickers)
+
+    def peers(self, ticker: str) -> DataPoint:
+        return self.finnhub.peers(ticker)

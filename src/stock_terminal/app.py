@@ -1,19 +1,22 @@
 """The screen.
 
 Top strip (SPY, QQQ, VIX, 10-year, market status, data-delay notice), the watchlist
-table on the left, the news feed in the middle (Phase 2), the detail tabs on the
-right (Phases 3 to 5), and a collapsible log panel. Keys: a add, d delete, r refresh,
-? explain, l log, q quit. All data arrives through a Provider so the screen never
-talks to a network client directly.
+table on the left, the news feed for the highlighted ticker in the middle, the detail
+tabs on the right (Phases 3 to 5), and a collapsible log panel. Keys: a add, d delete,
+r refresh, f cycle the news filter, o open the highlighted headline, ? explain, l log,
+q quit. All data arrives through a Provider so the screen never talks to a network
+client directly. Prices refresh on their own timer; news on a slower one.
 """
 from __future__ import annotations
 
 import logging
+import webbrowser
 from collections import deque
 from datetime import datetime
 from typing import Any, Deque, Optional
 from zoneinfo import ZoneInfo
 
+from rich.markup import escape
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -26,15 +29,20 @@ from textual.widgets import (
     Header,
     Input,
     Label,
+    ListItem,
+    ListView,
     RichLog,
     Static,
     TabbedContent,
     TabPane,
 )
 
-from .datapoint import DELAYED_MARK, FRESH, STALE_MARK, human_age
+from .datapoint import DELAYED_MARK, FRESH, STALE_MARK, human_age, utcnow
 from .logging_setup import CallbackHandler
+from .news.models import RELATIONS, FeedEntry, NewsBoard
+from .news.reactions import describe as describe_reaction
 from .provider import Board, Provider
+from .relationships import catalyst_label
 from .watchlist import Watchlist
 
 NY = ZoneInfo("America/New_York")
@@ -43,6 +51,8 @@ COLUMNS = ("Ticker", "Price", "Chg %", "LT", "Opt", "Earn", "Validity", "Data")
 VALIDITY_PLACEHOLDER = "UNPROVEN 0/30"
 PHASE_PLACEHOLDER = "--"
 LEGEND = f"{STALE_MARK} stale  {DELAYED_MARK} delayed  -- missing"
+NEWS_FILTERS = ("ALL",) + RELATIONS
+RELATION_STYLE = {"DIRECT": "bold green", "PEER": "cyan", "SECTOR": "magenta", "MACRO": "yellow", "FILING": "bold blue"}
 
 
 def fmt_time_ny(dt: Optional[datetime]) -> str:
@@ -59,6 +69,24 @@ def _parse_iso(text: Any) -> Optional[datetime]:
         return datetime.fromisoformat(str(text)) if text else None
     except ValueError:
         return None
+
+
+def short_source(source: str) -> str:
+    """alpaca/benzinga -> benzinga, edgar/8-K -> 8-K, finnhub/Reuters -> Reuters."""
+    return source.split("/", 1)[1] if "/" in source else source
+
+
+def entry_markup(entry: FeedEntry, now: Optional[datetime] = None) -> str:
+    """Three lines of Rich markup for one headline: tags, the headline, source and reaction."""
+    now = now or utcnow()
+    item = entry.item
+    age = human_age((now - item.published_at).total_seconds())
+    style = RELATION_STYLE.get(entry.relation, "")
+    sentiment = f"{item.sentiment:+.2f}" if item.sentiment is not None else "--"
+    line1 = f"[dim]{age:>3}[/] [{style}]{entry.relation:<6}[/] {escape(catalyst_label(item.catalyst)):<16} sent {sentiment}"
+    line2 = escape(item.headline)
+    line3 = f"[dim]{escape(short_source(item.source))}  {escape(describe_reaction(entry.reaction))}[/]"
+    return f"{line1}\n{line2}\n{line3}"
 
 
 class TickerPrompt(ModalScreen[Optional[str]]):
@@ -88,8 +116,12 @@ class StockTerminalApp(App[None]):
     CSS = """
     #top-strip { height: auto; padding: 0 1; background: $panel; border-bottom: solid $primary; }
     #main { height: 1fr; }
-    #watchlist { width: 46%; min-width: 74; }
-    #news { width: 1fr; min-width: 20; border-left: solid $primary; padding: 0 1; }
+    #watchlist { width: 46%; min-width: 66; }
+    #news { width: 1fr; min-width: 20; border-left: solid $primary; }
+    #news-head { height: auto; padding: 0 1; background: $panel; }
+    #news-list { height: 1fr; }
+    #news-list > ListItem { height: auto; padding: 0 1; }
+    #news-list Static { width: 1fr; }
     #detail { width: 1fr; min-width: 24; border-left: solid $primary; }
     #log-panel { height: auto; }
     #log { height: 8; }
@@ -98,6 +130,8 @@ class StockTerminalApp(App[None]):
         Binding("a", "add_ticker", "Add"),
         Binding("d", "delete_ticker", "Delete"),
         Binding("r", "refresh", "Refresh"),
+        Binding("f", "cycle_filter", "Filter"),
+        Binding("o", "open_link", "Open"),
         Binding("question_mark", "explain", "Explain", key_display="?"),
         Binding("l", "toggle_log", "Log"),
         Binding("q", "quit", "Quit"),
@@ -119,6 +153,10 @@ class StockTerminalApp(App[None]):
         self.periodic_refresh = periodic_refresh
         self.logger = logger or logging.getLogger("stock_terminal")
         self.board: Optional[Board] = None
+        self.news_board: Optional[NewsBoard] = None
+        self.news_filter = "ALL"
+        self.news_head_text = "News: loading..."
+        self.shown_entries: list[FeedEntry] = []
         self.strip_text = "Loading..."
         self._log_lines: Deque[str] = deque(maxlen=500)
         self._log_handler: Optional[CallbackHandler] = None
@@ -129,11 +167,9 @@ class StockTerminalApp(App[None]):
         yield Static(self.strip_text, id="top-strip")
         with Horizontal(id="main"):
             yield DataTable(id="watchlist")
-            yield Static(
-                "News feed arrives in Phase 2.\n\nSelect a ticker on the left; its DIRECT, PEER, SECTOR, "
-                "MACRO and FILING headlines will list here, newest first, each with a sentiment score.",
-                id="news",
-            )
+            with Vertical(id="news"):
+                yield Static(self.news_head_text, id="news-head")
+                yield ListView(id="news-list")
             with TabbedContent(id="detail"):
                 with TabPane("Score", id="tab-score"):
                     yield Static(
@@ -160,8 +196,10 @@ class StockTerminalApp(App[None]):
         self._attach_log_panel()
         self.logger.info("app started; watchlist: %s", ", ".join(self.watchlist.tickers) or "(empty)")
         self.refresh_data()
+        self.refresh_news()
         if self.periodic_refresh:
             self.set_interval(float(self.cfg["refresh_seconds"]), self.refresh_data)
+            self.set_interval(float(self.cfg["news"]["refresh_seconds"]), self.refresh_news)
 
     def on_unmount(self) -> None:
         if self._log_handler is not None:
@@ -182,6 +220,7 @@ class StockTerminalApp(App[None]):
     # ----- data -----
     def action_refresh(self) -> None:
         self.refresh_data()
+        self.refresh_news()
 
     @work(thread=True, exclusive=True, group="refresh", exit_on_error=False)
     def refresh_data(self) -> None:
@@ -194,10 +233,25 @@ class StockTerminalApp(App[None]):
             return
         self.call_from_thread(self.apply_board, board)
 
+    @work(thread=True, exclusive=True, group="news", exit_on_error=False)
+    def refresh_news(self) -> None:
+        tickers = list(self.watchlist.tickers)
+        try:
+            news_board = self.provider.refresh_news(tickers)
+        except Exception as exc:  # noqa: BLE001
+            self.logger.exception("news refresh failed")
+            self.call_from_thread(self.notify, f"News refresh failed: {exc}", severity="error")
+            return
+        self.call_from_thread(self.apply_news_board, news_board)
+
     def apply_board(self, board: Board) -> None:
         self.board = board
         self._render_top_strip()
         self._render_table()
+
+    def apply_news_board(self, news_board: NewsBoard) -> None:
+        self.news_board = news_board
+        self._render_news()
 
     # ----- rendering -----
     def _render_top_strip(self) -> None:
@@ -271,6 +325,49 @@ class StockTerminalApp(App[None]):
         if selected in self.watchlist.tickers:
             table.move_cursor(row=table.get_row_index(selected))
 
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._render_news()
+
+    def _news_head(self, ticker: Optional[str], shown: int, total: int) -> str:
+        board = self.news_board
+        if ticker is None:
+            return "News: add a ticker with a"
+        if board is None:
+            return f"{ticker} news: loading..."
+        when = fmt_time_ny(board.refreshed_at) if board.refreshed_at else "?"
+        line1 = f"{ticker} news  filter {self.news_filter}  {shown} of {total}  refreshed {when}"
+        # One line per source family (alpaca, finnhub, edgar): "finnhub news AAPL" and "finnhub general" failing for
+        # the same reason would otherwise fill the narrow pane. Other tickers' entries are left out.
+        problems: dict[str, str] = {}
+        for name, state in board.source_status.items():
+            if state.startswith("ok"):
+                continue
+            words = name.split()
+            if len(words) > 2 and words[-1] != ticker and words[-1] in self.watchlist.tickers:
+                continue
+            problems.setdefault(words[0], state)
+        lines = [line1, f"sentiment {board.scorer_status}"]
+        if ticker in board.map_notes:
+            lines.append(board.map_notes[ticker])
+        if problems:
+            lines.append("sources: " + "; ".join(f"{family} {state}" for family, state in problems.items()))
+        return "\n".join(lines)
+
+    def _render_news(self) -> None:
+        ticker = self._selected_ticker()
+        listing = self.query_one("#news-list", ListView)
+        entries = self.news_board.feeds.get(ticker, []) if (self.news_board and ticker) else []
+        shown = [e for e in entries if self.news_filter == "ALL" or e.relation == self.news_filter]
+        self.shown_entries = shown
+        self.news_head_text = self._news_head(ticker, len(shown), len(entries))
+        self.query_one("#news-head", Static).update(self.news_head_text)
+        listing.clear()
+        now = utcnow()
+        if ticker and self.news_board and not shown:
+            listing.append(ListItem(Static("No headlines in the window for this filter.")))
+        for entry in shown:
+            listing.append(ListItem(Static(entry_markup(entry, now))))
+
     # ----- actions -----
     def action_add_ticker(self) -> None:
         self.push_screen(TickerPrompt(), self._ticker_added)
@@ -287,6 +384,7 @@ class StockTerminalApp(App[None]):
         self._render_table()
         self.notify(f"Added {added}")
         self.refresh_data()
+        self.refresh_news()
 
     def action_delete_ticker(self) -> None:
         ticker = self._selected_ticker()
@@ -296,7 +394,26 @@ class StockTerminalApp(App[None]):
         self.watchlist.remove(ticker)
         self.logger.info("removed %s", ticker)
         self._render_table()
+        self._render_news()
         self.notify(f"Removed {ticker}")
+
+    def action_cycle_filter(self) -> None:
+        index = NEWS_FILTERS.index(self.news_filter) if self.news_filter in NEWS_FILTERS else 0
+        self.news_filter = NEWS_FILTERS[(index + 1) % len(NEWS_FILTERS)]
+        self._render_news()
+
+    def action_open_link(self) -> None:
+        listing = self.query_one("#news-list", ListView)
+        index = listing.index
+        if index is None or not (0 <= index < len(self.shown_entries)):
+            self.notify("Move into the news list (Tab, then arrows) and press o on a headline", severity="warning")
+            return
+        url = self.shown_entries[index].item.url
+        if not url:
+            self.notify("This item has no link", severity="warning")
+            return
+        self.logger.info("opening %s", url)
+        webbrowser.open(url)
 
     def action_explain(self) -> None:
         self.notify(

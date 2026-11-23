@@ -1,4 +1,4 @@
-# Direct dependencies, pinned to the versions installed and tested on 2026-11-15.
+# Direct dependencies, pinned to the versions installed and tested on 2026-11-15 (Phase 1) and 2026-11-22 (Phase 2).
 # Install: .venv\Scripts\python -m pip install -r requirements.txt
 textual==8.2.8
 alpaca-py==0.45.0
@@ -7,3 +7,7 @@ python-dotenv==1.2.4
 httpx==0.28.1
 pytest==9.2.0
 pytest-asyncio==1.5.0
+# Phase 2 sentiment (FinBERT runs locally on the CPU). torch's Windows wheel on PyPI is the CPU build; the one
+# installed here came from https://download.pytorch.org/whl/cpu and reports as 2.15.0+cpu, which satisfies this pin.
+torch==2.15.0
+transformers==5.23.0
