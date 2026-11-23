@@ -2,16 +2,17 @@
 
 `refresh` returns a Board: every quote the screen needs, the FRED values for the top
 strip, and the market clock. `refresh_news` returns a NewsBoard: a tagged feed per
-watchlist ticker and the state of every news source. The screen never imports a
-client directly, so tests hand it a fake provider and the real one grows new sources
-in later phases without touching the UI.
+watchlist ticker and the state of every news source. `refresh_quant` returns a
+QuantBoard: the long-term score per watchlist ticker against the universe. The screen
+never imports a client directly, so tests hand it a fake provider and the real one
+grows new sources in later phases without touching the UI.
 """
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from .cache import Cache
 from .clients.alpaca_client import AlpacaClient, Quote
@@ -25,6 +26,8 @@ from .news.engine import NewsEngine
 from .news.models import NewsBoard
 from .news.sentiment import build_scorer
 from .news.store import NewsStore
+from .quant.engine import QuantBoard, QuantEngine
+from .quant.store import MarketStore
 
 
 @dataclass
@@ -54,6 +57,14 @@ class Provider(Protocol):
 
     def refresh_news(self, tickers: list[str]) -> NewsBoard: ...
 
+    def refresh_quant(
+        self,
+        tickers: list[str],
+        on_board: Optional[Callable[[QuantBoard], None]] = None,
+        progress: Optional[Callable[[str], None]] = None,
+        force: bool = False,
+    ) -> QuantBoard: ...
+
 
 class LiveProvider:
     def __init__(self, cfg: dict[str, Any], keys: Keys, cache: Cache, logger: Optional[logging.Logger] = None) -> None:
@@ -66,6 +77,8 @@ class LiveProvider:
         self.store = NewsStore(cfg["cache"]["path"], cfg["news"]["dedupe_hours"], cfg["news"]["dedupe_similarity"])
         self.scorer = build_scorer(cfg)
         self.news = NewsEngine(cfg, self.store, self.scorer, self.alpaca, self.alpaca_news, self.finnhub, self.edgar, cache, logger)
+        self.market = MarketStore(cfg["cache"]["path"])
+        self.quant = QuantEngine(cfg, self.market, self.store, self.news, self.alpaca, self.finnhub, cache, logger)
 
     def refresh(self, symbols: list[str]) -> Board:
         clock = self.alpaca.clock()
@@ -76,6 +89,15 @@ class LiveProvider:
 
     def refresh_news(self, tickers: list[str]) -> NewsBoard:
         return self.news.refresh(tickers)
+
+    def refresh_quant(
+        self,
+        tickers: list[str],
+        on_board: Optional[Callable[[QuantBoard], None]] = None,
+        progress: Optional[Callable[[str], None]] = None,
+        force: bool = False,
+    ) -> QuantBoard:
+        return self.quant.refresh(tickers, on_board=on_board, progress=progress, force=force)
 
     def peers(self, ticker: str) -> DataPoint:
         return self.finnhub.peers(ticker)

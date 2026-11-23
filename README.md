@@ -17,7 +17,7 @@ validity status. The full spec is in [docs/SPEC.md](docs/SPEC.md).
 |---|---|---|
 | 1 | Skeleton: screen, watchlist, prices, market clock, VIX and 10-year, config, keys, cache, rate limits, log panel, tests | **Built 2026-11-15, live data confirmed 2026-11-18 (Alpaca) and 2026-11-22 (FRED).** |
 | 2 | News engine: relationship map, Alpaca + Finnhub + EDGAR, DIRECT / PEER / SECTOR / MACRO / FILING tags, catalyst types, FinBERT sentiment, dedupe, reaction tracker, news pane | **Built 2026-11-22, live on every source the same night:** Alpaca news, Finnhub, EDGAR, FinBERT, reactions filled from bars. |
-| 3 | Long-term score with the explain view | Not started |
+| 3 | Long-term score: six factors as z-scores against the S&P 100, Favorable / Neutral / Unfavorable, the `?` explain view, the signal log | **Built 2026-11-22.** |
 | 4 | Options check | Not started |
 | 5 | Signal log, three validity tests, status banner | Not started |
 | 6 | Backtest, experiment log, sizing panel, extras | Not started |
@@ -44,6 +44,15 @@ Print one ticker's tagged news feed, Finnhub's peer list as a snippet for `relat
 .venv\Scripts\python -m stock_terminal --news AAPL
 .venv\Scripts\python -m stock_terminal --peers AAPL
 .venv\Scripts\python -m stock_terminal --reactions
+```
+
+Print one ticker's long-term score with the full explain view, force the nightly universe pull now, or list the
+signal log:
+
+```powershell
+.venv\Scripts\python -m stock_terminal --score AAPL
+.venv\Scripts\python -m stock_terminal --universe
+.venv\Scripts\python -m stock_terminal --signals
 ```
 
 Run the tests:
@@ -101,7 +110,7 @@ Market CLOSED, opens Mon Nov 23 9:30 AM ET | Newest IEX trade 2d ago | Refreshed
 | `r` | refresh prices and news now (prices also refresh every `refresh_seconds`, news every `news.refresh_seconds`) |
 | `f` | cycle the news filter: ALL, DIRECT, PEER, SECTOR, MACRO, FILING |
 | `o` | open the highlighted headline in the browser (Tab into the news list, arrows to pick one) |
-| `?` | explain view: arrives in Phase 3 with the score |
+| `?` | explain view for the highlighted ticker's score: the formula, every input and its source (Esc closes) |
 | `l` | show or hide the log panel |
 | `q` | quit |
 
@@ -116,6 +125,8 @@ How to read a number:
 - `Chg %` is the change against the previous session's close.
 - VIX and 10Y come from FRED, which posts each value the next business day, so the strip shows the previous close
   with its date.
+- `LT` is the long-term label: `FAV` Favorable, `NEU` Neutral, `UNF` Unfavorable, `--` no score, `...` still computing. The
+  Score tab spells it out.
 - The validity column reads `UNPROVEN 0/30` until the app has produced and scored 30 signals (Phase 5).
 
 ## The news pane
@@ -169,6 +180,42 @@ line in the pane, never as a crash.
 
 This product uses the FRED API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.
 
+## The long-term score
+
+The Score tab shows the highlighted ticker's label, composite, percentile in the universe and one line per factor;
+`?` opens the full explain view. Every number traces to a formula in `src/stock_terminal/quant/factors.py` and to a
+source named on screen.
+
+**Universe.** `universe.yaml` lists the reference group (the S&P 100 as of September 2026, 101 names, edit freely).
+Every factor is a **z-score** against it: how many standard deviations the stock sits from the group's average,
+capped at -3 and +3. The universe's closes, fundamentals and news are pulled once a day (the "nightly" refresh, on
+the first score refresh after `quant.universe_ttl_seconds`; `--universe` forces it) and the closes are kept for good
+in `data/terminal.db`. The first pull takes a few minutes: a year of daily closes for every name in one Alpaca call,
+then Finnhub fundamentals and company news for each name, rate-limited under the free plan. The screen shows
+labels as soon as the closes and fundamentals are in, and fills the news factor after the universe news pass.
+
+| Factor | Formula | Weight |
+|---|---|---|
+| momentum | price 21 trading days ago / price 252 trading days ago - 1 | 0.30 |
+| trend | price / 200-day simple average - 1 | 0.10 |
+| value | average of earnings yield (EPS TTM / price) and free-cash-flow yield (1 / price-to-FCF per share TTM) | 0.20 |
+| quality | average of the z-scores of ROE, gross margin and negative debt-to-equity | 0.25 |
+| low risk | negative of 1-year realized volatility (sample std of 252 daily log returns x sqrt 252) | 0.10 |
+| news | time-weighted DIRECT headline sentiment, weight 0.5 ^ (age in days / 3), needs 5 or more headlines | 0.05 |
+
+Composite = sum of weight x z. A missing factor counts as z = 0 and is named on screen. Top 20 percent of the
+universe by composite = Favorable, bottom 20 percent = Unfavorable, the rest Neutral. The weights and the 20 percent
+cut-offs live in `config.yaml` and are starting guesses from the spec, never tuned to past data.
+
+Two choices the spec left open, both shown in the explain view: quality's three parts have different units (percent,
+percent, ratio), so each is z-scored against the universe before averaging; value's two parts are both yields, so
+they average as written. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
+the fetch time shown.
+
+**Signal log.** A label is logged only when it changes (one open long-term signal per ticker, so a stock that stays
+Favorable for three months is one bet, not sixty), with the close at the time and a 63-trading-day horizon. Phase 5
+scores each signal against SPY when its horizon passes. `--signals` prints the log.
+
 ## How the code is laid out
 
 ```
@@ -178,9 +225,9 @@ src/stock_terminal/
   provider.py         refresh() for prices (Board) and refresh_news() for the feeds (NewsBoard)
   relationships.py    relationships.yaml: per-ticker map and the keyword tables
   clients/base.py     the shared fetch routine: cache, rate limit, stale or missing on failure
-  clients/alpaca_client.py   stock snapshots, the market clock, minute and daily bars
+  clients/alpaca_client.py   stock snapshots, the market clock, minute bars, daily closes for the universe
   clients/alpaca_news.py     Alpaca news
-  clients/finnhub_client.py  Finnhub company news, general news, peers
+  clients/finnhub_client.py  Finnhub company news, general news, peers, basic financials
   clients/edgar_client.py    EDGAR filing lists, 8-K items, Form 4 XML parsing
   clients/fred_client.py     VIX and the 10-year yield
   news/models.py      NewsItem, the relation tag per ticker, Reaction, the feed shapes
@@ -189,6 +236,10 @@ src/stock_terminal/
   news/dedupe.py      the same-story rule
   news/sentiment.py   FinBERT behind a swappable Scorer interface
   news/reactions.py   the rules for filling a reaction from bars
+  quant/factors.py    the six factors as pure functions, inputs kept for the explain view
+  quant/scoring.py    z-scores, composite, labels, the Score tab and explain text
+  quant/engine.py     the score refresh: universe closes, fundamentals, news factor, signal log
+  quant/store.py      SQLite tables daily_bars, scores, signals
   datapoint.py        DataPoint: a value plus its source, age and status
   cache.py            SQLite cache (data/terminal.db)
   ratelimit.py        rolling-window rate limiter, one per client
@@ -198,6 +249,7 @@ src/stock_terminal/
 tests/                pytest; no network, fakes for every client and the sentiment model
 docs/SPEC.md          the spec
 relationships.yaml    the relationship map and keyword tables (edit freely)
+universe.yaml         the reference universe for the score (edit freely)
 ```
 
 Rules the code keeps: no order code anywhere; every outside call goes through a client with a rate limiter and the

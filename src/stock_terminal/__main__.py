@@ -5,6 +5,9 @@
     python -m stock_terminal --news AAPL     print AAPL's tagged news feed, exit
     python -m stock_terminal --peers AAPL    print Finnhub's peers for AAPL as a relationships.yaml snippet
     python -m stock_terminal --reactions     print the average price move after headlines, by tag and catalyst
+    python -m stock_terminal --score AAPL    print AAPL's long-term score with the full explain view
+    python -m stock_terminal --universe      pull the universe's closes, fundamentals and news now (the nightly job)
+    python -m stock_terminal --signals       print the signal log (label changes)
 
 Paths in config.yaml are relative to the folder you run from, so run from the repo root.
 """
@@ -21,6 +24,8 @@ from .config import Keys, load_config, load_keys
 from .logging_setup import setup_logging
 from .news.models import RELATIONS, NewsBoard
 from .provider import LiveProvider, Provider
+from .quant.engine import QuantBoard
+from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label, peers_snippet
 from .watchlist import Watchlist
 
@@ -34,6 +39,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--news", metavar="TICKER", help="print the tagged news feed for one ticker and exit")
     parser.add_argument("--peers", metavar="TICKER", help="print Finnhub's peers for a ticker as a relationships.yaml snippet")
     parser.add_argument("--reactions", action="store_true", help="print average price moves after headlines, by tag and catalyst")
+    parser.add_argument("--score", metavar="TICKER", help="print one ticker's long-term score with the explain view")
+    parser.add_argument("--universe", action="store_true", help="refresh the universe's closes, fundamentals and news now")
+    parser.add_argument("--signals", action="store_true", help="print the signal log")
     parser.add_argument("--config", default="config.yaml", help="settings file (default: config.yaml)")
     parser.add_argument("--watchlist", default="watchlist.yaml", help="watchlist file (default: watchlist.yaml)")
     parser.add_argument("--env", default=".env", help="secrets file (default: .env)")
@@ -45,6 +53,10 @@ def _plain(markup: str) -> str:
     from rich.text import Text
 
     return Text.from_markup(markup).plain
+
+
+def _progress(text: str) -> None:
+    print(f"  ... {text}", flush=True)
 
 
 def print_news_status(news_board: NewsBoard, tickers: list[str]) -> None:
@@ -61,6 +73,22 @@ def print_news_status(news_board: NewsBoard, tickers: list[str]) -> None:
         print(f"  {ticker:<6} {len(feed):>3} total   {detail}")
         if ticker in news_board.map_notes:
             print(f"         note: {news_board.map_notes[ticker]}")
+
+
+def print_quant_status(board: QuantBoard, tickers: list[str]) -> None:
+    print(f"\nLong-term score: {board.status}")
+    for note in board.notes:
+        print(f"  note: {note}")
+    for ticker in tickers:
+        score = board.scores.get(ticker)
+        if score is None or score.composite is None:
+            print(f"  {ticker:<6} no score" + (f" ({score.notes[0]})" if score and score.notes else ""))
+            continue
+        label = score.label or "no label"
+        pct = f"{score.percentile:.0f}th pct" if score.percentile is not None else ""
+        print(f"  {ticker:<6} {label:<12} composite {score.composite:+.2f}  {pct}  as of {score.as_of}")
+    for event in board.signals:
+        print(f"  signal logged: {event}")
 
 
 def run_check(cfg: dict[str, Any], keys: Keys, provider: Provider, watchlist: Watchlist) -> int:
@@ -97,6 +125,10 @@ def run_check(cfg: dict[str, Any], keys: Keys, provider: Provider, watchlist: Wa
     news_board = provider.refresh_news(list(watchlist.tickers))
     print_news_status(news_board, list(watchlist.tickers))
 
+    print("\nScoring (the first run pulls a year of closes and the fundamentals for the whole universe)...")
+    quant_board = provider.refresh_quant(list(watchlist.tickers), progress=_progress)
+    print_quant_status(quant_board, list(watchlist.tickers))
+
     print(f"\n{ATTRIBUTION}")
     return 0
 
@@ -114,6 +146,46 @@ def run_news(provider: Provider, ticker: str) -> int:
     print("\nSources:")
     for name, state in news_board.source_status.items():
         print(f"  {name:<22} {state}")
+    return 0
+
+
+def run_score(provider: Provider, ticker: str) -> int:
+    ticker = ticker.upper()
+    board = provider.refresh_quant([ticker], progress=_progress)
+    print(f"\n{board.status}")
+    for note in board.notes:
+        print(f"note: {note}")
+    score = board.scores.get(ticker)
+    if score is None:
+        print(f"{ticker}: no score")
+        return 1
+    print()
+    print(_plain(score_summary(score)))
+    print()
+    print(_plain(explain_text(score, board.universe_name)))
+    for event in board.signals:
+        print(f"\nsignal logged: {event}")
+    return 0
+
+
+def run_universe(provider: Provider, watchlist: Watchlist) -> int:
+    board = provider.refresh_quant(list(watchlist.tickers), progress=_progress, force=True)
+    print_quant_status(board, list(watchlist.tickers))
+    return 0
+
+
+def run_signals(provider: Any) -> int:
+    signals = provider.market.signals()
+    if not signals:
+        print("No signals logged yet.")
+        return 0
+    print(f"{'id':>4}  {'ticker':<7}{'kind':<10}{'label':<12}{'dir':>4}  {'opened':<17}{'open':>9}  {'closed':<17}{'close':>9}  note")
+    for s in signals:
+        opened = s.opened_at.strftime("%Y-%m-%d %H:%M") if s.opened_at else "?"
+        closed = s.closed_at.strftime("%Y-%m-%d %H:%M") if s.closed_at else "open"
+        open_price = f"{s.open_price:.2f}" if s.open_price is not None else "--"
+        close_price = f"{s.close_price:.2f}" if s.close_price is not None else "--"
+        print(f"{s.id:>4}  {s.ticker:<7}{s.kind:<10}{s.label:<12}{s.direction:>4}  {opened:<17}{open_price:>9}  {closed:<17}{close_price:>9}  {s.note}")
     return 0
 
 
@@ -165,6 +237,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_peers(provider, args.peers)
     if args.reactions:
         return run_reactions(provider)
+    if args.score:
+        return run_score(provider, args.score)
+    if args.universe:
+        return run_universe(provider, watchlist)
+    if args.signals:
+        return run_signals(provider)
     StockTerminalApp(cfg, watchlist, provider, logger=logger).run()
     return 0
 

@@ -2,10 +2,11 @@
 
 Top strip (SPY, QQQ, VIX, 10-year, market status, data-delay notice), the watchlist
 table on the left, the news feed for the highlighted ticker in the middle, the detail
-tabs on the right (Phases 3 to 5), and a collapsible log panel. Keys: a add, d delete,
-r refresh, f cycle the news filter, o open the highlighted headline, ? explain, l log,
-q quit. All data arrives through a Provider so the screen never talks to a network
-client directly. Prices refresh on their own timer; news on a slower one.
+tabs on the right (Score live from Phase 3; Options and Validity later), and a
+collapsible log panel. Keys: a add, d delete, r refresh, f cycle the news filter, o open
+the highlighted headline, ? explain the score, l log, q quit. All data arrives through a
+Provider so the screen never talks to a network client directly. Prices, news and the
+score refresh on their own workers and timers.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from rich.markup import escape
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import (
     Collapsible,
@@ -42,12 +43,14 @@ from .logging_setup import CallbackHandler
 from .news.models import RELATIONS, FeedEntry, NewsBoard
 from .news.reactions import describe as describe_reaction
 from .provider import Board, Provider
+from .quant.engine import QuantBoard
+from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label
 from .watchlist import Watchlist
 
 NY = ZoneInfo("America/New_York")
 COLUMNS = ("Ticker", "Price", "Chg %", "LT", "Opt", "Earn", "Validity", "Data")
-# No signal has ever been produced, so by the spec's own definition every label is UNPROVEN (under 30 scored).
+# No signal has ever been scored, so by the spec's own definition every label is UNPROVEN (under 30 scored).
 VALIDITY_PLACEHOLDER = "UNPROVEN 0/30"
 PHASE_PLACEHOLDER = "--"
 LEGEND = f"{STALE_MARK} stale  {DELAYED_MARK} delayed  -- missing"
@@ -111,6 +114,34 @@ class TickerPrompt(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+class ExplainScreen(ModalScreen[None]):
+    """The ? view: the formula, every input and its source for the highlighted ticker's score."""
+
+    DEFAULT_CSS = """
+    ExplainScreen { align: center middle; }
+    #explain { width: 90%; height: 90%; border: thick $accent; background: $surface; padding: 1 2; }
+    """
+    BINDINGS = [
+        Binding("escape", "close", "Close"),
+        Binding("question_mark", "close", "Close", key_display="?"),
+        Binding("q", "close", "Close"),
+    ]
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.text = text
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="explain"):
+            yield Static(self.text, id="explain-text")
+
+    def on_mount(self) -> None:
+        self.query_one("#explain", VerticalScroll).focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class StockTerminalApp(App[None]):
     TITLE = "Stock Terminal: read-only, no orders, ever"
     CSS = """
@@ -123,6 +154,7 @@ class StockTerminalApp(App[None]):
     #news-list > ListItem { height: auto; padding: 0 1; }
     #news-list Static { width: 1fr; }
     #detail { width: 1fr; min-width: 24; border-left: solid $primary; }
+    #score-pane { padding: 0 1; }
     #log-panel { height: auto; }
     #log { height: 8; }
     """
@@ -154,8 +186,11 @@ class StockTerminalApp(App[None]):
         self.logger = logger or logging.getLogger("stock_terminal")
         self.board: Optional[Board] = None
         self.news_board: Optional[NewsBoard] = None
+        self.quant_board: Optional[QuantBoard] = None
+        self.quant_status = "score: loading..."
         self.news_filter = "ALL"
         self.news_head_text = "News: loading..."
+        self.score_text = ""
         self.shown_entries: list[FeedEntry] = []
         self.strip_text = "Loading..."
         self._log_lines: Deque[str] = deque(maxlen=500)
@@ -172,10 +207,8 @@ class StockTerminalApp(App[None]):
                 yield ListView(id="news-list")
             with TabbedContent(id="detail"):
                 with TabPane("Score", id="tab-score"):
-                    yield Static(
-                        "Long-term score arrives in Phase 3. Press ? there for the formula, every input and its source.",
-                        id="score-pane",
-                    )
+                    with VerticalScroll():
+                        yield Static("Score: loading...", id="score-pane")
                 with TabPane("Options", id="tab-options"):
                     yield Static("Call / put check arrives in Phase 4.", id="options-pane")
                 with TabPane("Validity", id="tab-validity"):
@@ -197,9 +230,11 @@ class StockTerminalApp(App[None]):
         self.logger.info("app started; watchlist: %s", ", ".join(self.watchlist.tickers) or "(empty)")
         self.refresh_data()
         self.refresh_news()
+        self.refresh_quant()
         if self.periodic_refresh:
             self.set_interval(float(self.cfg["refresh_seconds"]), self.refresh_data)
             self.set_interval(float(self.cfg["news"]["refresh_seconds"]), self.refresh_news)
+            self.set_interval(float(self.cfg["quant"]["refresh_seconds"]), self.refresh_quant)
 
     def on_unmount(self) -> None:
         if self._log_handler is not None:
@@ -221,6 +256,7 @@ class StockTerminalApp(App[None]):
     def action_refresh(self) -> None:
         self.refresh_data()
         self.refresh_news()
+        self.refresh_quant()
 
     @work(thread=True, exclusive=True, group="refresh", exit_on_error=False)
     def refresh_data(self) -> None:
@@ -244,6 +280,20 @@ class StockTerminalApp(App[None]):
             return
         self.call_from_thread(self.apply_news_board, news_board)
 
+    @work(thread=True, exclusive=True, group="quant", exit_on_error=False)
+    def refresh_quant(self) -> None:
+        tickers = list(self.watchlist.tickers)
+        try:
+            self.provider.refresh_quant(
+                tickers,
+                on_board=lambda b: self.call_from_thread(self.apply_quant_board, b),
+                progress=lambda text: self.call_from_thread(self.set_quant_status, f"score: {text}"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.logger.exception("score refresh failed")
+            self.call_from_thread(self.set_quant_status, f"score failed: {exc}")
+            self.call_from_thread(self.notify, f"Score refresh failed: {exc}", severity="error")
+
     def apply_board(self, board: Board) -> None:
         self.board = board
         self._render_top_strip()
@@ -252,6 +302,18 @@ class StockTerminalApp(App[None]):
     def apply_news_board(self, news_board: NewsBoard) -> None:
         self.news_board = news_board
         self._render_news()
+
+    def apply_quant_board(self, quant_board: QuantBoard) -> None:
+        self.quant_board = quant_board
+        self.quant_status = f"score: {quant_board.status}"
+        for event in quant_board.signals:
+            self.notify(f"Label change: {event}", title="Signal logged")
+        self._render_table()
+        self._render_score()
+
+    def set_quant_status(self, text: str) -> None:
+        self.quant_status = text
+        self._render_score()
 
     # ----- rendering -----
     def _render_top_strip(self) -> None:
@@ -303,6 +365,12 @@ class StockTerminalApp(App[None]):
         except Exception:  # noqa: BLE001  cursor off the table during a redraw
             return None
 
+    def _lt_label(self, ticker: str) -> str:
+        if self.quant_board is None:
+            return "..."
+        score = self.quant_board.scores.get(ticker)
+        return score.short_label if score is not None else "--"
+
     def _render_table(self) -> None:
         table = self.query_one("#watchlist", DataTable)
         selected = self._selected_ticker()
@@ -318,7 +386,7 @@ class StockTerminalApp(App[None]):
                 data = "ok" if quote.price.status == FRESH else quote.price.status.upper()
             table.add_row(
                 ticker, price, change,
-                PHASE_PLACEHOLDER, PHASE_PLACEHOLDER, PHASE_PLACEHOLDER,
+                self._lt_label(ticker), PHASE_PLACEHOLDER, PHASE_PLACEHOLDER,
                 VALIDITY_PLACEHOLDER, data,
                 key=ticker,
             )
@@ -327,6 +395,7 @@ class StockTerminalApp(App[None]):
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
         self._render_news()
+        self._render_score()
 
     def _news_head(self, ticker: Optional[str], shown: int, total: int) -> str:
         board = self.news_board
@@ -368,6 +437,21 @@ class StockTerminalApp(App[None]):
         for entry in shown:
             listing.append(ListItem(Static(entry_markup(entry, now))))
 
+    def _render_score(self) -> None:
+        ticker = self._selected_ticker()
+        lines = [f"[dim]{escape(self.quant_status)}[/]"]
+        if ticker is None:
+            lines.append("Add a ticker with a.")
+        elif self.quant_board is None:
+            lines.append(f"{ticker}: score not computed yet.")
+        else:
+            score = self.quant_board.scores.get(ticker)
+            lines.append(score_summary(score) if score is not None else f"{ticker}: No score yet.")
+            for note in self.quant_board.notes:
+                lines.append(f"[yellow]{escape(note)}[/]")
+        self.score_text = "\n".join(lines)
+        self.query_one("#score-pane", Static).update(self.score_text)
+
     # ----- actions -----
     def action_add_ticker(self) -> None:
         self.push_screen(TickerPrompt(), self._ticker_added)
@@ -385,6 +469,7 @@ class StockTerminalApp(App[None]):
         self.notify(f"Added {added}")
         self.refresh_data()
         self.refresh_news()
+        self.refresh_quant()
 
     def action_delete_ticker(self) -> None:
         ticker = self._selected_ticker()
@@ -395,6 +480,7 @@ class StockTerminalApp(App[None]):
         self.logger.info("removed %s", ticker)
         self._render_table()
         self._render_news()
+        self._render_score()
         self.notify(f"Removed {ticker}")
 
     def action_cycle_filter(self) -> None:
@@ -416,10 +502,12 @@ class StockTerminalApp(App[None]):
         webbrowser.open(url)
 
     def action_explain(self) -> None:
-        self.notify(
-            "The explain view arrives in Phase 3 with the long-term score: the formula, every input and its source.",
-            title="? not wired yet",
-        )
+        ticker = self._selected_ticker()
+        score = self.quant_board.scores.get(ticker) if (self.quant_board and ticker) else None
+        if score is None:
+            self.notify(f"No score to explain yet ({self.quant_status})", severity="warning")
+            return
+        self.push_screen(ExplainScreen(explain_text(score, self.quant_board.universe_name)))
 
     def action_toggle_log(self) -> None:
         panel = self.query_one("#log-panel", Collapsible)
