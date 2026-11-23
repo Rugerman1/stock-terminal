@@ -179,7 +179,7 @@ class NewsEngine:
         return {"pulled": len(collected), "new": len(new_items), "duplicates": duplicates, "failed": failed}
 
     def _score_unscored(self, since: datetime) -> None:
-        unscored = self.store.unscored(since)
+        unscored = self.store.unscored(since, limit=int(self.cfg["sentiment"].get("max_per_refresh", 1000)))
         if not unscored:
             return
         scores = self.scorer.score([item.headline for item in unscored])

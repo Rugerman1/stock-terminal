@@ -39,6 +39,7 @@ sentiment:
   enabled: true                # false = every sentiment shows as missing, nothing is loaded
   model: ProsusAI/finbert      # downloaded once by Hugging Face (about 440 MB), runs on the CPU
   batch_size: 16
+  max_per_refresh: 1000        # backlog headlines scored per refresh; about ten a second on this CPU
 
 quant:                         # the long-term score (Phase 3)
   refresh_seconds: 3600        # how often the score is recomputed while the screen is open

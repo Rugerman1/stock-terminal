@@ -57,6 +57,7 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         "model": "ProsusAI/finbert",
         "batch_size": 16,
+        "max_per_refresh": 1000,
     },
     "quant": {
         "refresh_seconds": 3600,
@@ -134,6 +135,7 @@ def validate(cfg: Mapping[str, Any]) -> None:
     if not isinstance(cfg["sentiment"]["enabled"], bool):
         raise ConfigError("sentiment.enabled must be true or false")
     _positive(cfg, "sentiment", "batch_size")
+    _positive(cfg, "sentiment", "max_per_refresh")
     for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik", "metrics", "bars_daily"):
         _positive(cfg, "cache", "ttl_seconds", name)
     for name in ("refresh_seconds", "universe_ttl_seconds", "history_days", "zscore_cap", "news_halflife_days", "news_min_headlines", "news_window_days", "signal_horizon_days"):
