@@ -134,7 +134,7 @@ def describe_form4(parsed: dict[str, Any]) -> str:
     for code, bucket in by_code.items():
         words = CODE_WORDS.get(code, f"transaction code {code}:")
         text = f"{words} {bucket['shares']:,.0f} shares"
-        if bucket["priced"] > 0:
+        if bucket["priced"] > 0 and bucket["value"] > 0:   # gifts and awards carry a $0 price: say nothing rather than "$0.00"
             text += f" at ${bucket['value'] / bucket['priced']:,.2f}"
         parts.append(text)
     if not parts:

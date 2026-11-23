@@ -53,6 +53,8 @@ def test_form4_parse_and_headline():
     assert parsed["owner"] == "COOK TIMOTHY D" and parsed["title"] == "Chief Executive Officer" and len(parsed["transactions"]) == 2
     assert describe_form4(parsed) == "Form 4: Cook Timothy D (Chief Executive Officer) sold 2,000 shares at $351.00"
     assert describe_form4({"owner": "X", "title": "Director", "transactions": [], "derivative_count": 2}) == "Form 4: X (Director) reported derivative (option) transactions only"
+    gift = {"owner": "LEVINSON ARTHUR D", "title": "Director", "transactions": [{"date": "", "code": "G", "shares": 50000.0, "price": 0.0, "ad": "D"}], "derivative_count": 0}
+    assert describe_form4(gift) == "Form 4: Levinson Arthur D (Director) gifted 50,000 shares"   # seen live 2026-11-22: a $0 gift price is not a price
 
 
 def submissions(now: datetime) -> dict:
