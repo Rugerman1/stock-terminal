@@ -16,7 +16,7 @@ validity status. The full spec is in [docs/SPEC.md](docs/SPEC.md).
 | Phase | What | State |
 |---|---|---|
 | 1 | Skeleton: screen, watchlist, prices, market clock, VIX and 10-year, config, keys, cache, rate limits, log panel, tests | **Built 2026-11-15, live data confirmed 2026-11-18 (Alpaca) and 2026-11-22 (FRED).** |
-| 2 | News engine: relationship map, Alpaca + Finnhub + EDGAR, DIRECT / PEER / SECTOR / MACRO / FILING tags, catalyst types, FinBERT sentiment, dedupe, reaction tracker, news pane | **Built 2026-11-22.** Alpaca news and EDGAR work with the keys already in `.env`; Finnhub and EDGAR need their two lines (see Keys). |
+| 2 | News engine: relationship map, Alpaca + Finnhub + EDGAR, DIRECT / PEER / SECTOR / MACRO / FILING tags, catalyst types, FinBERT sentiment, dedupe, reaction tracker, news pane | **Built 2026-11-22, live on every source the same night:** Alpaca news, Finnhub, EDGAR, FinBERT, reactions filled from bars. |
 | 3 | Long-term score with the explain view | Not started |
 | 4 | Options check | Not started |
 | 5 | Signal log, three validity tests, status banner | Not started |
