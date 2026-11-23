@@ -51,6 +51,9 @@ def test_value_is_the_average_of_the_two_yields():
     assert only_eps.ok and abs(only_eps.value - 0.05) < 1e-12 and "only one" in only_eps.note
     assert not value(None, 100.0).ok and not value({"pfcfShareTTM": 0}, 100.0).ok
     assert value({"epsTTM": -2.0}, 100.0).value == -0.02          # a loss is a negative yield, shown as such
+    bank = value({"epsTTM": 4.36, "pfcfShareTTM": 2.758}, 47.07, financial=True)   # Bank of America, seen live
+    assert bank.ok and abs(bank.value - 4.36 / 47.07) < 1e-12 and "fcf_yield" not in bank.inputs and bank.inputs["financial"] is True
+    assert "FCF yield left out" in bank.note and "only one" not in bank.note
     brk = value({"epsTTM": 59668.8, "pfcfShareTTM": 50.0}, 569.92)   # Finnhub's Class A EPS on the B share, seen live
     assert brk.ok and abs(brk.value - 0.02) < 1e-12 and "earnings yield 10470% rejected" in brk.note
     assert not value({"epsTTM": 59668.8}, 569.92).ok and "rejected" in value({"epsTTM": 59668.8}, 569.92).note

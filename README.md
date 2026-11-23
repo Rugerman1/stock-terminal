@@ -230,7 +230,9 @@ percent, ratio), so each is z-scored against the universe before averaging, and 
 and 95th percentile before the mean and std are taken (`quant.quality_clip_pct`, 0 turns it off), because a few
 near-zero-equity names (ROE of 575 percent, debt-to-equity of 81) otherwise stretch the spread until everyone else's z
 collapses toward zero; a clipped name says so in the explain view. Value's two parts are both yields, so they average
-as written. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
+as written, except for the banks listed under `financials` in `relationships.yaml`, which use earnings yield alone:
+a bank's free cash flow counts deposit inflows and reads as a 20 to 36 percent yield, which is not what the factor
+measures; the explain view says "FCF yield left out" on those names. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
 the fetch time shown. A yield beyond 100 percent (earnings or cash flow per share larger than the price) is a data
 error, not a bargain, and is rejected with a note: Finnhub reports Berkshire's Class A earnings per B share. Free cash
 flow yield is not meaningful for banks, so their value factor leans on an inflated number; the spec's formula is kept

@@ -204,6 +204,7 @@ class QuantEngine:
     def raw_factors(self, symbols: list[str], tickers: list[str], metrics: dict[str, DataPoint], now: datetime) -> dict[str, RawFactors]:
         closes_by_symbol = self.store.closes_many(symbols, limit=int(self.q["history_days"]))
         sentiments = self._direct_sentiments(symbols, tickers, now)
+        financials = self.news_engine.load_map().financials if self.news_engine is not None else set()
         raws: dict[str, RawFactors] = {}
         for symbol in symbols:
             closes = closes_by_symbol.get(symbol, [])
@@ -224,7 +225,7 @@ class QuantEngine:
                     "momentum": momentum(closes),
                     "trend": trend(closes),
                     "low_risk": low_risk(closes),
-                    "value": value(metric_values, price),
+                    "value": value(metric_values, price, financial=symbol in financials),
                     "news": news_sentiment(sentiments.get(symbol, []), float(self.q["news_halflife_days"]), int(self.q["news_min_headlines"])),
                     # the options check's direction components, z-scored against the same universe
                     "ret_63": return_63(closes),

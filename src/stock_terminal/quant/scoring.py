@@ -361,6 +361,8 @@ def _inputs_text(name: str, inputs: dict[str, Any]) -> str:
             parts.append(f"EPS TTM {inputs['epsTTM']:.2f} / price {inputs['price']:.2f} = {_pct(inputs['earnings_yield'])}")
         if "fcf_yield" in inputs:
             parts.append(f"1 / P-to-FCF {inputs['pfcfShareTTM']:.2f} = {_pct(inputs['fcf_yield'])}")
+        if inputs.get("financial"):
+            parts.append("bank: FCF yield left out on purpose")
         return "; ".join(parts) or "--"
     if name == "news":
         return (f"{inputs.get('headlines')} scored DIRECT headlines, half-life {inputs.get('halflife_days')} days, "

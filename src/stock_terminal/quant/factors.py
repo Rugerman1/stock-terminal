@@ -90,19 +90,27 @@ def _num(metrics: dict[str, Any], key: str) -> Optional[float]:
     return value
 
 
-def value(metrics: Optional[dict[str, Any]], price: Optional[float]) -> FactorValue:
+FINANCIAL_NOTE = "FCF yield left out: a bank's cash flow counts deposit inflows, so earnings yield alone"
+
+
+def value(metrics: Optional[dict[str, Any]], price: Optional[float], financial: bool = False) -> FactorValue:
     """Average of earnings yield (EPS TTM / price) and free-cash-flow yield (1 / price-to-FCF per share TTM).
 
     Both are decimals (0.03 = 3 percent). A negative EPS or FCF gives a negative yield, which is the honest reading.
     With only one of the two available, that one is used and the note says so. A yield beyond +-100 percent means
     earnings or cash flow per share larger than the price, which no large company has; it is a data error (seen live
-    2026-11-22: Finnhub gives BRK.B the Class A EPS of about 59,669 dollars) and is rejected with a note.
+    2026-11-22: Finnhub gives BRK.B the Class A EPS of about 59,669 dollars) and is rejected with a note. For a bank
+    (`financials` in relationships.yaml) the FCF yield is left out: bank cash flow counts deposit inflows and reads as
+    a 20 to 36 percent yield, which is not what the factor measures.
     """
     if not metrics:
         return FactorValue("value", None, "no fundamentals")
     inputs: dict[str, Any] = {}
     parts = []
     rejected = []
+    if financial:
+        rejected.append(FINANCIAL_NOTE)
+        inputs["financial"] = True
     eps = _num(metrics, "epsTTM")
     if eps is not None and price:
         ey = eps / price
@@ -112,7 +120,7 @@ def value(metrics: Optional[dict[str, Any]], price: Optional[float]) -> FactorVa
         else:
             rejected.append(f"earnings yield {ey * 100:.0f}% rejected (EPS larger than the price: data error)")
     pfcf = _num(metrics, "pfcfShareTTM")
-    if pfcf is not None and pfcf != 0:
+    if pfcf is not None and pfcf != 0 and not financial:
         fy = 1.0 / pfcf
         inputs.update({"pfcfShareTTM": pfcf, "fcf_yield": fy})
         if abs(fy) <= YIELD_LIMIT:

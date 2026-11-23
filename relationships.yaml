@@ -12,6 +12,8 @@
 #
 # Keywords match whole words, any case, in the headline only. A ticker that is not listed here gets no PEER,
 # SECTOR or MACRO news, only DIRECT and FILING, and the screen says so.
+# financials              banks: their value factor uses earnings yield alone, because bank "free cash flow" counts deposit
+#                         inflows as cash and reads as a 20 to 36 percent yield (Tyler delegated the call to Tony, 2026-11-22)
 
 tickers:
   AAPL:
@@ -29,6 +31,8 @@ tickers:
     peers: [AMD, AVGO, TSM, INTC, MU]
     topics: [rates, chips_export, ai_regulation]
     aliases: [Nvidia, Jensen Huang]
+
+financials: [JPM, BAC, C, WFC, GS, MS, USB, COF, SCHW, BNY]
 
 sectors:
   XLK:

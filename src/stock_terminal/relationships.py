@@ -107,6 +107,7 @@ class Relationships:
         self.sectors = KeywordTable({str(k).upper(): _str_list((v or {}).get("keywords")) for k, v in sectors.items()})
         self.topics = KeywordTable({str(k): _str_list(v) for k, v in (data.get("topics") or {}).items()})
         self.catalysts = KeywordTable({str(k): _str_list(v) for k, v in (data.get("catalysts") or {}).items()})
+        self.financials: set[str] = {s.upper() for s in _str_list(data.get("financials"))}
         unknown = [t for t in self.catalysts.names if t not in CATALYST_NAMES]
         if unknown:
             log.warning("relationships: catalyst types not in the spec's list are kept but shown as-is: %s", unknown)

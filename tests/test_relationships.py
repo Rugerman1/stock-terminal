@@ -7,6 +7,7 @@ def test_shipped_map_loads(rmap):
     assert "rates" in aapl.topics and "Apple" in aapl.aliases
     assert aapl.symbols[0] == "AAPL" and "XLK" in aapl.symbols and "MSFT" in aapl.symbols
     assert rmap.sector_name("SMH") == "Semiconductors"
+    assert {"JPM", "BAC", "GS"} <= rmap.financials and "AAPL" not in rmap.financials and len(rmap.financials) == 10
 
 
 def test_unknown_ticker_gets_an_empty_map(rmap):
@@ -47,7 +48,7 @@ def test_keyword_regex_is_case_insensitive_and_whole_word():
 
 def test_missing_file_gives_empty_map(tmp_path):
     rmap = Relationships.load(tmp_path / "nope.yaml")
-    assert rmap.for_ticker("AAPL").listed is False
+    assert rmap.for_ticker("AAPL").listed is False and rmap.financials == set()
     assert rmap.catalyst_of("Apple reports earnings") == "other"
     assert rmap.topics_in("Fed hikes rates") == []
 
