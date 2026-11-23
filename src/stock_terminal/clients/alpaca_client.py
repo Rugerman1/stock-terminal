@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockSnapshotRequest
+from alpaca.data.requests import StockBarsRequest, StockSnapshotRequest
+from alpaca.data.timeframe import TimeFrame
 from alpaca.trading.client import TradingClient
 
 from ..cache import Cache
@@ -97,6 +98,7 @@ class AlpacaClient(BaseClient):
         self.source = f"alpaca/{self.feed.value}"
         self.ttl_snapshot = cfg["cache"]["ttl_seconds"]["snapshot"]
         self.ttl_clock = cfg["cache"]["ttl_seconds"]["clock"]
+        self.ttl_bars = cfg["cache"]["ttl_seconds"]["bars"]
         self.delayed_after = cfg["alpaca"]["delayed_after_seconds"]
         self.enabled = keys.has_alpaca
         if data_client is not None or trading_client is not None:
@@ -158,3 +160,32 @@ class AlpacaClient(BaseClient):
             "next_open": clock.next_open.isoformat(),
             "next_close": clock.next_close.isoformat(),
         }
+
+    # ----- bars (for the news reaction tracker) -----
+    def bars(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> DataPoint:
+        """Minute or daily bars as a list of {"t": iso time, "c": close}. `timeframe` is "minute" or "day"."""
+        symbol = symbol.upper()
+        source = f"{self.source}/bars"
+        if not self.enabled:
+            return DataPoint.missing(source, NO_KEY)
+        if timeframe not in ("minute", "day"):
+            raise ValueError("timeframe must be minute or day")
+        end = min(end, utcnow() - timedelta(minutes=1))
+        if end <= start:
+            return DataPoint([], source, FRESH, note="window is in the future")
+        key = f"alpaca:bars:{symbol}:{timeframe}:{start.strftime('%Y%m%dT%H%M')}:{end.strftime('%Y%m%dT%H%M')}"
+        return self.fetch_cached(key, self.ttl_bars, lambda: self._fetch_bars(symbol, timeframe, start, end), source)
+
+    def _fetch_bars(self, symbol: str, timeframe: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
+        request = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute if timeframe == "minute" else TimeFrame.Day,
+            start=start,
+            end=end,
+            feed=self.feed,
+            limit=10_000,
+        )
+        result = self._data.get_stock_bars(request)
+        data = getattr(result, "data", result)
+        rows = data.get(symbol, []) if hasattr(data, "get") else []
+        return [{"t": bar.timestamp.isoformat(), "c": float(bar.close)} for bar in rows]
