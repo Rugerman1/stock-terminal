@@ -8,6 +8,7 @@ from stock_terminal.datapoint import FRESH, MISSING, DataPoint, utcnow
 from stock_terminal.news.models import DIRECT, MACRO, FeedEntry, NewsBoard, NewsItem, Reaction
 from stock_terminal.provider import Board
 from stock_terminal.quant.engine import QuantBoard
+from stock_terminal.quant.options import Contract, DirectionScore, OptionsResult
 from stock_terminal.quant.scoring import FactorScore, Score
 from stock_terminal.watchlist import Watchlist
 
@@ -62,7 +63,12 @@ class FakeProvider:
             FactorScore("news", 0.05, None, None, 0.0, None, None, "needs 5 scored DIRECT headlines, have 2", {"headlines": 2}, "store"),
         ]
         score = Score("AAPL", 1.20, "Favorable", 88.0, factors, as_of="2026-11-20", notes=["news missing (needs 5 scored DIRECT headlines, have 2), counted as z = 0"], universe_n=101, scored_n=98, favorable_min=0.71, unfavorable_max=-0.64, price=343.4)
-        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", refreshed_at=None, status="scored 98 of 101 S&P 100 names, closes to 2026-11-20") if False else QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"])
+        from datetime import date, datetime, timezone
+        contract = Contract("AAPL270108C00345000", "call", 345.0, date(2027, 1, 8), 1200, 11.5, 12.3, 0.2667, 0.5352, {"delta": 0.5352})
+        direction = DirectionScore(1.4, {"63-day return": {"raw": 0.2, "z": 1.4, "mean": 0.05, "std": 0.1, "n": 101, "note": ""}}, 1.0)
+        options = OptionsResult("AAPL", "Call candidate", "call", direction, contract, metrics={"dte": 49, "iv": 0.2667, "iv_source": "feed", "hv20": 0.3, "hv60": 0.25, "vol_ratio": 1.07, "iv_rank": None, "iv_days": 1, "expected_move": 33.0, "expected_move_pct": 9.7, "breakeven": 357.3, "needed_move_pct": 4.0, "pop_market": 38.0, "pop_model": 35.0, "expected_value": -40.0, "simulations": 20000, "max_loss": 1230.0, "greeks": {"delta": 0.5352}, "greeks_source": "feed", "rate": 0.0434}, checks={"direction": (True, "z +1.40"), "vol ratio": (True, "IV/HV60 1.07 (limit 1.2)"), "move": (True, "needs 4.0%, expected 9.7%"), "liquidity": (True, "OI 1200, spread 6.7% of mid")})
+        earnings = {"AAPL": DataPoint("2027-01-27", "finnhub/earnings-calendar", FRESH, as_of=datetime(2027, 1, 27, tzinfo=timezone.utc))}
+        board = QuantBoard(scores={"AAPL": score} if "AAPL" in tickers else {}, universe_name="S&P 100", universe_n=101, scored_n=98, as_of="2026-11-20", status="scored 98 of 101 S&P 100 names, closes to 2026-11-20", signals=["AAPL: none -> Favorable"], options={"AAPL": options} if "AAPL" in tickers else {}, earnings=earnings if "AAPL" in tickers else {})
         if on_board:
             on_board(board)
         return board
@@ -164,6 +170,9 @@ async def test_score_column_pane_and_explain(tmp_path, cfg):
         assert provider.quant_calls == [["AAPL", "MSFT"]]
         table = app.query_one("#watchlist", DataTable)
         assert str(table.get_row_at(0)[3]) == "FAV" and str(table.get_row_at(1)[3]) == "--"
+        assert str(table.get_row_at(0)[4]) == "CALL" and str(table.get_row_at(1)[4]) == "--"
+        assert str(table.get_row_at(0)[5]).endswith("d") and str(table.get_row_at(1)[5]) == "--"
+        assert "AAPL  Call candidate" in app.options_text and "AAPL270108C00345000" in app.options_text
         assert app.quant_status.startswith("score: scored 98 of 101")
         assert "Favorable" in app.score_text and "composite +1.20" in app.score_text and "88th pct of 98" in app.score_text
         await pilot.press("question_mark")
@@ -172,6 +181,7 @@ async def test_score_column_pane_and_explain(tmp_path, cfg):
         assert isinstance(app.screen, ExplainScreen)
         text = app.screen.text
         assert "Long-term score for AAPL" in text and "price 21 trading days ago" in text and "-> Favorable" in text and "source: finnhub" in text
+        assert "Call / put check for AAPL" in text and "Step 4, label" in text and "-> Call candidate" in text
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, ExplainScreen)

@@ -177,3 +177,35 @@ def zscore(x: Optional[float], avg: Optional[float], sd: Optional[float], cap: f
     if x is None or avg is None or sd is None or sd <= 0:
         return None
     return max(-cap, min(cap, (x - avg) / sd))
+
+
+# ----- the options check's direction components (same z-score treatment, shorter windows) -----
+
+def return_63(closes: list[tuple[str, float]]) -> FactorValue:
+    """price / price 63 trading days ago - 1."""
+    if len(closes) < 64:
+        return FactorValue("ret_63", None, f"needs 64 daily closes, have {len(closes)}")
+    last_date, last = closes[-1]
+    then_date, then = closes[-64]
+    if then <= 0:
+        return FactorValue("ret_63", None, "price 63 days ago is not positive")
+    return FactorValue("ret_63", last / then - 1.0, inputs={"price": last, "price_date": last_date, "price_63d_ago": then, "price_63d_ago_date": then_date})
+
+
+def vs_50d_average(closes: list[tuple[str, float]]) -> FactorValue:
+    """price / 50-day simple average - 1."""
+    if len(closes) < 50:
+        return FactorValue("vs_50d", None, f"needs 50 daily closes, have {len(closes)}")
+    last_date, last = closes[-1]
+    avg = mean(c for _, c in closes[-50:])
+    if avg <= 0:
+        return FactorValue("vs_50d", None, "50-day average is not positive")
+    return FactorValue("vs_50d", last / avg - 1.0, inputs={"price": last, "price_date": last_date, "avg_50d": avg})
+
+
+def recent_news_sentiment(headlines: list[tuple[float, float]], days: float = 7.0, min_headlines: int = 3) -> FactorValue:
+    """Plain average sentiment of DIRECT headlines no older than `days`. headlines: (age in days, sentiment)."""
+    usable = [s for age, s in headlines if s is not None and age is not None and 0 <= age <= days]
+    if len(usable) < min_headlines:
+        return FactorValue("news_7d", None, f"needs {min_headlines} scored DIRECT headlines in {days:g} days, have {len(usable)}", {"headlines": len(usable)})
+    return FactorValue("news_7d", mean(usable), inputs={"headlines": len(usable), "days": days})

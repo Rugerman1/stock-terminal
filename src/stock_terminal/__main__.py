@@ -6,6 +6,7 @@
     python -m stock_terminal --peers AAPL    print Finnhub's peers for AAPL as a relationships.yaml snippet
     python -m stock_terminal --reactions     print the average price move after headlines, by tag and catalyst
     python -m stock_terminal --score AAPL    print AAPL's long-term score with the full explain view
+    python -m stock_terminal --options AAPL  print AAPL's call / put check with the full explain view
     python -m stock_terminal --universe      pull the universe's closes, fundamentals and news now (the nightly job)
     python -m stock_terminal --signals       print the signal log (label changes)
     python -m stock_terminal --rededupe      recompute the duplicate marks after a rule change
@@ -26,6 +27,7 @@ from .logging_setup import setup_logging
 from .news.models import RELATIONS, NewsBoard
 from .provider import LiveProvider, Provider
 from .quant.engine import QuantBoard
+from .quant.options import options_explain, options_summary
 from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label, peers_snippet
 from .watchlist import Watchlist
@@ -41,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--peers", metavar="TICKER", help="print Finnhub's peers for a ticker as a relationships.yaml snippet")
     parser.add_argument("--reactions", action="store_true", help="print average price moves after headlines, by tag and catalyst")
     parser.add_argument("--score", metavar="TICKER", help="print one ticker's long-term score with the explain view")
+    parser.add_argument("--options", metavar="TICKER", help="print one ticker's call / put check with the explain view")
     parser.add_argument("--universe", action="store_true", help="refresh the universe's closes, fundamentals and news now")
     parser.add_argument("--signals", action="store_true", help="print the signal log")
     parser.add_argument("--rededupe", action="store_true", help="recompute every duplicate mark in the news store with the current rule")
@@ -89,6 +92,20 @@ def print_quant_status(board: QuantBoard, tickers: list[str]) -> None:
         label = score.label or "no label"
         pct = f"{score.percentile:.0f}th pct" if score.percentile is not None else ""
         print(f"  {ticker:<6} {label:<12} composite {score.composite:+.2f}  {pct}  as of {score.as_of}")
+    if board.options:
+        print("\nOptions check:")
+        for ticker in tickers:
+            result = board.options.get(ticker)
+            earnings = board.earnings.get(ticker)
+            when = earnings.value if earnings is not None and earnings.ok else f"-- ({earnings.note})" if earnings is not None else "--"
+            if result is None:
+                print(f"  {ticker:<6} no check")
+                continue
+            contract = result.contract.symbol if result.contract else "no contract"
+            d = result.direction.value
+            print(f"  {ticker:<6} {result.label:<15} direction {d:+.2f}  {contract}  next earnings {when}" if d is not None else f"  {ticker:<6} {result.label:<15} direction --  {contract}  next earnings {when}")
+            for f in result.failed:
+                print(f"         failed {f}")
     for event in board.signals:
         print(f"  signal logged: {event}")
 
@@ -170,6 +187,23 @@ def run_score(provider: Provider, ticker: str) -> int:
     return 0
 
 
+def run_options(provider: Provider, ticker: str) -> int:
+    ticker = ticker.upper()
+    board = provider.refresh_quant([ticker], progress=_progress)
+    print(f"\n{board.status}")
+    result = board.options.get(ticker)
+    if result is None:
+        print(f"{ticker}: no options check (options.enabled false, or no data)")
+        return 1
+    print()
+    print(_plain(options_summary(result)))
+    print()
+    print(_plain(options_explain(result)))
+    for event in board.signals:
+        print(f"\nsignal logged: {event}")
+    return 0
+
+
 def run_universe(provider: Provider, watchlist: Watchlist) -> int:
     board = provider.refresh_quant(list(watchlist.tickers), progress=_progress, force=True)
     print_quant_status(board, list(watchlist.tickers))
@@ -241,6 +275,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_reactions(provider)
     if args.score:
         return run_score(provider, args.score)
+    if args.options:
+        return run_options(provider, args.options)
     if args.universe:
         return run_universe(provider, watchlist)
     if args.signals:

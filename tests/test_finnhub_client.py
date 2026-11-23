@@ -36,6 +36,9 @@ def make_client(cfg, cache, key="k"):
             body = [{"id": 8, "datetime": STAMP - 120, "headline": "Fed holds rates", "url": "", "source": "CNBC", "related": "", "summary": ""}]
         elif path.endswith("/stock/peers"):
             body = ["AAPL", "MSFT", "DELL", "HPQ"]
+        elif path.endswith("/calendar/earnings"):
+            assert request.url.params["symbol"] == "AAPL" and request.url.params["from"] == "2026-11-20"
+            body = {"earningsCalendar": [{"date": "2027-01-27", "hour": "amc"}, {"date": "2026-11-02", "hour": "amc"}]}
         elif path.endswith("/stock/metric"):
             assert request.url.params["metric"] == "all"
             body = {"metric": {"epsTTM": 8.97, "peTTM": 37.6, "roeTTM": 127.6, "grossMarginTTM": 48.79, "52WeekHigh": 400.0, "pfcfShareTTM": None}, "series": {}}
@@ -67,6 +70,16 @@ def test_metrics_keep_only_the_fields_the_score_uses(cfg, cache):
     client.metrics("AAPL")
     assert len(seen) == 1                                             # cached for a day
     assert FinnhubClient(Keys(), cache, cfg).metrics("AAPL").status == MISSING
+
+
+def test_next_earnings_is_the_first_date_on_or_after_today(cfg, cache):
+    from datetime import date
+    client, seen = make_client(cfg, cache)
+    dp = client.next_earnings("aapl", today=date(2026, 11, 20))
+    assert dp.ok and dp.value == "2027-01-27" and dp.as_of.date().isoformat() == "2027-01-27"
+    client.next_earnings("AAPL", today=date(2026, 11, 20))
+    assert len(seen) == 1
+    assert FinnhubClient(Keys(), cache, cfg).next_earnings("AAPL").status == MISSING
 
 
 def test_without_key_is_missing(cfg, cache):

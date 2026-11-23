@@ -44,6 +44,7 @@ from .news.models import RELATIONS, FeedEntry, NewsBoard
 from .news.reactions import describe as describe_reaction
 from .provider import Board, Provider
 from .quant.engine import QuantBoard
+from .quant.options import options_explain, options_summary
 from .quant.scoring import explain_text, score_summary
 from .relationships import catalyst_label
 from .watchlist import Watchlist
@@ -191,6 +192,7 @@ class StockTerminalApp(App[None]):
         self.news_filter = "ALL"
         self.news_head_text = "News: loading..."
         self.score_text = ""
+        self.options_text = ""
         self.shown_entries: list[FeedEntry] = []
         self.strip_text = "Loading..."
         self._log_lines: Deque[str] = deque(maxlen=500)
@@ -210,7 +212,8 @@ class StockTerminalApp(App[None]):
                     with VerticalScroll():
                         yield Static("Score: loading...", id="score-pane")
                 with TabPane("Options", id="tab-options"):
-                    yield Static("Call / put check arrives in Phase 4.", id="options-pane")
+                    with VerticalScroll():
+                        yield Static("Options: loading...", id="options-pane")
                 with TabPane("Validity", id="tab-validity"):
                     yield Static(
                         "Validity engine arrives in Phase 5. Until 30 signals are scored, every label reads UNPROVEN.",
@@ -371,6 +374,22 @@ class StockTerminalApp(App[None]):
         score = self.quant_board.scores.get(ticker)
         return score.short_label if score is not None else "--"
 
+    def _opt_label(self, ticker: str) -> str:
+        if self.quant_board is None:
+            return "..."
+        result = self.quant_board.options.get(ticker)
+        return result.short_label if result is not None else "--"
+
+    def _earn_label(self, ticker: str) -> str:
+        """Days to the next earnings date, from Finnhub's calendar."""
+        if self.quant_board is None:
+            return "..."
+        dp = self.quant_board.earnings.get(ticker)
+        if dp is None or not dp.ok or dp.as_of is None:
+            return "--"
+        days = (dp.as_of.date() - utcnow().date()).days
+        return f"{days}d" if days >= 0 else "--"
+
     def _render_table(self) -> None:
         table = self.query_one("#watchlist", DataTable)
         selected = self._selected_ticker()
@@ -386,7 +405,7 @@ class StockTerminalApp(App[None]):
                 data = "ok" if quote.price.status == FRESH else quote.price.status.upper()
             table.add_row(
                 ticker, price, change,
-                self._lt_label(ticker), PHASE_PLACEHOLDER, PHASE_PLACEHOLDER,
+                self._lt_label(ticker), self._opt_label(ticker), self._earn_label(ticker),
                 VALIDITY_PLACEHOLDER, data,
                 key=ticker,
             )
@@ -451,6 +470,19 @@ class StockTerminalApp(App[None]):
                 lines.append(f"[yellow]{escape(note)}[/]")
         self.score_text = "\n".join(lines)
         self.query_one("#score-pane", Static).update(self.score_text)
+        self._render_options(ticker)
+
+    def _render_options(self, ticker: Optional[str]) -> None:
+        lines = [f"[dim]{escape(self.quant_status)}[/]"]
+        if ticker is None:
+            lines.append("Add a ticker with a.")
+        elif self.quant_board is None:
+            lines.append(f"{ticker}: options check not computed yet.")
+        else:
+            result = self.quant_board.options.get(ticker)
+            lines.append(options_summary(result) if result is not None else f"{ticker}: No options check yet.")
+        self.options_text = "\n".join(lines)
+        self.query_one("#options-pane", Static).update(self.options_text)
 
     # ----- actions -----
     def action_add_ticker(self) -> None:
@@ -507,7 +539,11 @@ class StockTerminalApp(App[None]):
         if score is None:
             self.notify(f"No score to explain yet ({self.quant_status})", severity="warning")
             return
-        self.push_screen(ExplainScreen(explain_text(score, self.quant_board.universe_name)))
+        text = explain_text(score, self.quant_board.universe_name)
+        result = self.quant_board.options.get(ticker)
+        if result is not None:
+            text += "\n\n" + options_explain(result)
+        self.push_screen(ExplainScreen(text))
 
     def action_toggle_log(self) -> None:
         panel = self.query_one("#log-panel", Collapsible)

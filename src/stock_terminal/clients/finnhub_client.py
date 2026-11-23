@@ -8,7 +8,7 @@ URL, so an error message can never echo it.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
 import httpx
@@ -22,6 +22,7 @@ from .base import BaseClient
 
 BASE_URL = "https://finnhub.io/api/v1"
 NO_KEY = "no Finnhub key in .env"
+EARNINGS_LOOKAHEAD_DAYS = 120
 # The fundamentals the score uses, from /stock/metric?metric=all (133 fields on the free plan, checked live 2026-11-22).
 METRIC_KEYS = (
     "epsTTM", "peTTM", "pfcfShareTTM", "currentEv/freeCashFlowTTM", "roeTTM", "grossMarginTTM",
@@ -69,6 +70,7 @@ class FinnhubClient(BaseClient):
         self.ttl_news = cfg["cache"]["ttl_seconds"]["news"]
         self.ttl_peers = cfg["cache"]["ttl_seconds"]["peers"]
         self.ttl_metrics = cfg["cache"]["ttl_seconds"]["metrics"]
+        self.ttl_earnings = cfg["cache"]["ttl_seconds"]["earnings"]
         self.limit = int(cfg["news"]["per_source_limit"])
         self.enabled = keys.has_finnhub
         headers = {"X-Finnhub-Token": keys.finnhub} if keys.finnhub else {}
@@ -124,6 +126,26 @@ class FinnhubClient(BaseClient):
         if not isinstance(metric, dict):
             raise ValueError(f"Finnhub returned no metric block for {symbol}")
         return {k: metric.get(k) for k in METRIC_KEYS if metric.get(k) is not None}
+
+    def next_earnings(self, symbol: str, today: Optional[date] = None) -> DataPoint:
+        """The next earnings date on or after today from the free earnings calendar, as YYYY-MM-DD; MISSING when none is listed."""
+        symbol = symbol.upper()
+        source = "finnhub/earnings-calendar"
+        if not self.enabled:
+            return DataPoint.missing(source, NO_KEY)
+        today = today or date.today()
+        dp = self.fetch_cached(f"finnhub:earnings:{symbol}:{today.isoformat()}", self.ttl_earnings, lambda: self._fetch_earnings(symbol, today), source)
+        if not dp.ok:
+            return dp
+        if not dp.value.get("next"):
+            return DataPoint.missing(source, f"no earnings date listed for {symbol} in the next {EARNINGS_LOOKAHEAD_DAYS} days")
+        return DataPoint(dp.value["next"], source, dp.status, as_of=datetime.strptime(dp.value["next"], "%Y-%m-%d").replace(tzinfo=timezone.utc), fetched_at=dp.fetched_at, note=dp.note)
+
+    def _fetch_earnings(self, symbol: str, today: date) -> dict[str, Any]:
+        payload = self._get("/calendar/earnings", {"symbol": symbol, "from": today.isoformat(), "to": (today + timedelta(days=EARNINGS_LOOKAHEAD_DAYS)).isoformat()})
+        rows = payload.get("earningsCalendar", []) if isinstance(payload, dict) else []
+        dates = sorted(str(r.get("date")) for r in rows if isinstance(r, dict) and r.get("date") and str(r["date"]) >= today.isoformat())
+        return {"next": dates[0] if dates else None, "hour": next((r.get("hour") for r in rows if str(r.get("date")) == (dates[0] if dates else "")), None)}
 
     def _trim(self, payload: Any) -> list[dict[str, Any]]:
         """Keep only the fields the app uses, newest first, at most `limit` items, so the cache stays small."""

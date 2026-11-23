@@ -11,6 +11,10 @@ One `refresh`:
 5. If universe news is on and a day old: pull Finnhub company news for every universe
    name so the news factor has a universe to compare with, then score again.
 6. Record a signal for each watchlist ticker whose label changed (design call 1).
+7. The options check per watchlist ticker (Phase 4): direction z-scores against the same
+   universe, the contract list and chain snapshots, the risk-free rate from FRED, the next
+   earnings date from Finnhub, today's ATM implied volatility stored for the IV rank, and
+   a signal when a Call or Put candidate appears or changes contract.
 Anything missing stays missing and is named in the score's notes.
 """
 from __future__ import annotations
@@ -26,13 +30,15 @@ import yaml
 from ..cache import Cache
 from ..clients.alpaca_client import AlpacaClient
 from ..clients.finnhub_client import FinnhubClient
+from ..clients.fred_client import FredClient
 from ..datapoint import DataPoint, utcnow
 from ..news.engine import NewsEngine
 from ..news.models import KIND_NEWS
 from ..news.store import NewsStore
-from .factors import low_risk, momentum, news_sentiment, quality_components, trend, value
+from .factors import low_risk, mean_std, momentum, news_sentiment, quality_components, recent_news_sentiment, return_63, trend, value, vs_50d_average, zscore
+from .options import CALL, CALL_CANDIDATE, NO_TRADE, PUT, PUT_CANDIDATE, DirectionScore, OptionsCheck, OptionsResult, contracts_from_payload
 from .scoring import RawFactors, Score, score_all
-from .store import MarketStore
+from .store import OPTIONS, MarketStore
 
 Progress = Optional[Callable[[str], None]]
 
@@ -49,6 +55,8 @@ class QuantBoard:
     notes: list[str] = field(default_factory=list)           # data problems at the universe level
     signals: list[str] = field(default_factory=list)         # label changes recorded this run
     complete: bool = True                                    # False while the universe-news pass is still to come
+    options: dict[str, OptionsResult] = field(default_factory=dict)   # the call / put check per watchlist ticker
+    earnings: dict[str, DataPoint] = field(default_factory=dict)      # next earnings date per watchlist ticker
 
 
 def load_universe(path: str | Path) -> tuple[str, list[str]]:
@@ -74,9 +82,13 @@ class QuantEngine:
         finnhub: FinnhubClient,
         cache: Cache,
         logger: Optional[logging.Logger] = None,
+        fred: Optional[FredClient] = None,
     ) -> None:
         self.cfg = cfg
         self.q = cfg["quant"]
+        self.o = cfg["options"]
+        self.fred = fred
+        self.options_check = OptionsCheck(cfg)
         self.store = store
         self.news_store = news_store
         self.news_engine = news_engine
@@ -186,6 +198,10 @@ class QuantEngine:
                     "low_risk": low_risk(closes),
                     "value": value(metric_values, price),
                     "news": news_sentiment(sentiments.get(symbol, []), float(self.q["news_halflife_days"]), int(self.q["news_min_headlines"])),
+                    # the options check's direction components, z-scored against the same universe
+                    "ret_63": return_63(closes),
+                    "vs_50d": vs_50d_average(closes),
+                    "news_7d": recent_news_sentiment(sentiments.get(symbol, []), float(self.o["news_days"]), int(self.o["news_min_headlines"])),
                 },
                 quality=quality_components(metric_values),
                 sources={
@@ -272,6 +288,18 @@ class QuantEngine:
                 before = previous.label if previous else "none"
                 events.append(f"{ticker}: {before} -> {score.label}")
                 self.log.info("signal: %s label %s -> %s at %s", ticker, before, score.label, score.price)
+        options: dict[str, OptionsResult] = {}
+        earnings: dict[str, DataPoint] = {}
+        if bool(self.o["enabled"]):
+            direction_stats = self._direction_stats(raws, set(members))
+            for ticker in tickers:
+                raw = raws.get(ticker)
+                if raw is None:
+                    continue
+                earnings[ticker] = self.finnhub.next_earnings(ticker, now.date())
+                result = self._options_for(ticker, raw, direction_stats, earnings[ticker], now)
+                options[ticker] = result
+                events.extend(self._log_options_signal(ticker, result, raw.price, now))
         any_score = next(iter(scores.values()), None)
         scored_n = any_score.scored_n if any_score else 0
         as_of = max((s.as_of for s in scores.values() if s.as_of), default=None)
@@ -284,5 +312,77 @@ class QuantEngine:
         return QuantBoard(
             scores={t: scores[t] for t in tickers if t in scores},
             universe_name=universe_name, universe_n=len(members), scored_n=scored_n, as_of=as_of, run_at=now,
-            status=status, notes=list(notes), signals=events, complete=complete,
+            status=status, notes=list(notes), signals=events, complete=complete, options=options, earnings=earnings,
         )
+
+    # ----- the options check -----
+    def _direction_stats(self, raws: dict[str, RawFactors], members: set[str]) -> dict[str, tuple[Optional[float], Optional[float], int]]:
+        stats = {}
+        for name in ("ret_63", "vs_50d", "news_7d"):
+            values = [r.values[name].value for s, r in raws.items() if s in members and name in r.values and r.values[name].ok]
+            avg, sd = mean_std(values)
+            stats[name] = (avg, sd, len(values))
+        return stats
+
+    def _direction(self, raw: RawFactors, stats: dict) -> DirectionScore:
+        components: dict[str, dict[str, Any]] = {}
+        zs = []
+        for name, title in (("ret_63", "63-day return"), ("vs_50d", "price vs 50-day average"), ("news_7d", "7-day DIRECT sentiment")):
+            fv = raw.values.get(name)
+            avg, sd, n = stats.get(name, (None, None, 0))
+            z = zscore(fv.value if fv else None, avg, sd, float(self.q["zscore_cap"]))
+            components[title] = {
+                "raw": fv.value if fv else None, "z": z, "mean": avg, "std": sd, "n": n,
+                "note": (fv.note if fv and not fv.ok else ("" if z is not None else f"no universe spread (n={n})")),
+            }
+            if z is not None:
+                zs.append(z)
+        if len(zs) < 2:
+            return DirectionScore(None, components, float(self.o["direction_threshold"]), f"only {len(zs)} of 3 components available; needs 2")
+        note = "" if len(zs) == 3 else "2 of 3 components available"
+        return DirectionScore(sum(zs) / len(zs), components, float(self.o["direction_threshold"]), note)
+
+    def _options_for(self, ticker: str, raw: RawFactors, stats: dict, earnings: DataPoint, now: datetime) -> OptionsResult:
+        direction = self._direction(raw, stats)
+        kind = direction.side or CALL
+        price = raw.price
+        contracts: list = []
+        status = DataPoint.missing("alpaca/option-contracts", "no price")
+        if price:
+            lo, hi = now.date() + timedelta(days=int(self.o["dte_min"])), now.date() + timedelta(days=int(self.o["dte_max"]))
+            window = float(self.o["strike_window_pct"]) / 100.0
+            status = self.alpaca.option_contracts(ticker, lo, hi, kind, price * (1 - window), price * (1 + window))
+            if status.ok:
+                chain = self.alpaca.option_chain(ticker, lo, hi, kind, price * (1 - window), price * (1 + window))
+                contracts = contracts_from_payload(status.value, chain.value if chain.ok else None)
+                if not chain.ok:
+                    status = DataPoint.missing(chain.source, f"chain snapshots: {chain.note}")
+        rate = self.fred.latest(str(self.o["rate_series"])) if self.fred is not None else DataPoint.missing("fred", "no FRED client")
+        closes = self.store.closes(ticker, limit=int(self.q["history_days"]))
+        # IV rank uses the days stored before today; today's value is stored after the check runs.
+        iv_now = None
+        preview = self.options_check.run(ticker, price, closes, direction, contracts, status, rate, earnings, (None, 0), now)
+        iv_now = preview.metrics.get("iv")
+        rank = self.store.iv_rank(ticker, iv_now)
+        result = preview
+        result.metrics["iv_rank"], result.metrics["iv_days"] = rank
+        if iv_now is not None and result.contract is not None:
+            self.store.record_iv(ticker, now.date().isoformat(), iv_now, result.contract.symbol)
+            result.metrics["iv_days"] = self.store.iv_rank(ticker, iv_now)[1]
+        return result
+
+    def _log_options_signal(self, ticker: str, result: OptionsResult, price: Optional[float], now: datetime) -> list[str]:
+        events: list[str] = []
+        if result.label in (CALL_CANDIDATE, PUT_CANDIDATE) and result.contract is not None:
+            previous = self.store.open_signal(ticker, OPTIONS)
+            signal = self.store.record_label(ticker, result.label, price, now, int(result.metrics.get("dte") or 1), OPTIONS, detail=result.contract.symbol)
+            if signal is not None:
+                before = f"{previous.label} ({previous.note})" if previous else "none"
+                events.append(f"{ticker} options: {before} -> {result.label} ({result.contract.symbol})")
+                self.log.info("signal: %s options %s -> %s %s at %s", ticker, before, result.label, result.contract.symbol, price)
+        else:
+            closed = self.store.close_open(ticker, OPTIONS, price, now, f"label changed to {NO_TRADE}")
+            if closed is not None:
+                events.append(f"{ticker} options: {closed.label} -> {NO_TRADE}")
+                self.log.info("signal: %s options %s closed: No trade at %s", ticker, closed.label, price)
+        return events

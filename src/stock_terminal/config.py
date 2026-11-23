@@ -60,7 +60,7 @@ DEFAULTS: dict[str, Any] = {
         "max_per_refresh": 1000,
     },
     "quant": {
-        "refresh_seconds": 3600,
+        "refresh_seconds": 900,
         "universe_path": "universe.yaml",
         "universe_ttl_seconds": 86400,
         "history_days": 400,
@@ -73,6 +73,22 @@ DEFAULTS: dict[str, Any] = {
         "news_window_days": 30,
         "universe_news": True,
         "signal_horizon_days": 63,
+    },
+    "options": {
+        "enabled": True,
+        "dte_min": 30,
+        "dte_max": 60,
+        "target_delta": 0.50,
+        "min_open_interest": 500,
+        "max_spread_pct": 10,
+        "direction_threshold": 1.0,
+        "max_vol_ratio": 1.2,
+        "rate_series": "DGS3MO",
+        "simulations": 20000,
+        "seed": 42,
+        "strike_window_pct": 25,
+        "news_days": 7,
+        "news_min_headlines": 3,
     },
     "cache": {
         "path": "data/terminal.db",
@@ -87,6 +103,9 @@ DEFAULTS: dict[str, Any] = {
             "cik": 604800,
             "metrics": 86400,
             "bars_daily": 300,
+            "options": 300,
+            "contracts": 3600,
+            "earnings": 86400,
         },
     },
     "log": {
@@ -136,7 +155,7 @@ def validate(cfg: Mapping[str, Any]) -> None:
         raise ConfigError("sentiment.enabled must be true or false")
     _positive(cfg, "sentiment", "batch_size")
     _positive(cfg, "sentiment", "max_per_refresh")
-    for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik", "metrics", "bars_daily"):
+    for name in ("snapshot", "clock", "fred", "news", "edgar", "bars", "peers", "cik", "metrics", "bars_daily", "options", "contracts", "earnings"):
         _positive(cfg, "cache", "ttl_seconds", name)
     for name in ("refresh_seconds", "universe_ttl_seconds", "history_days", "zscore_cap", "news_halflife_days", "news_min_headlines", "news_window_days", "signal_horizon_days"):
         _positive(cfg, "quant", name)
@@ -154,6 +173,14 @@ def validate(cfg: Mapping[str, Any]) -> None:
         raise ConfigError("quant.universe_news must be true or false")
     if not isinstance(cfg["quant"]["universe_path"], str) or not cfg["quant"]["universe_path"]:
         raise ConfigError("quant.universe_path must be a file path")
+    for name in ("dte_min", "dte_max", "target_delta", "min_open_interest", "max_spread_pct", "direction_threshold", "max_vol_ratio", "simulations", "strike_window_pct", "news_days", "news_min_headlines"):
+        _positive(cfg, "options", name)
+    if cfg["options"]["dte_min"] >= cfg["options"]["dte_max"]:
+        raise ConfigError("options.dte_min must be below options.dte_max")
+    if not isinstance(cfg["options"]["enabled"], bool):
+        raise ConfigError("options.enabled must be true or false")
+    if not isinstance(cfg["options"]["rate_series"], str) or not cfg["options"]["rate_series"]:
+        raise ConfigError("options.rate_series must be a FRED series id")
     equities = cfg["top_strip"]["equities"]
     if not isinstance(equities, list) or not all(isinstance(s, str) and s for s in equities):
         raise ConfigError("top_strip.equities must be a list of ticker strings")

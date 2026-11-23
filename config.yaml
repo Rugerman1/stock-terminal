@@ -41,8 +41,8 @@ sentiment:
   batch_size: 16
   max_per_refresh: 1000        # backlog headlines scored per refresh; about ten a second on this CPU
 
-quant:                         # the long-term score (Phase 3)
-  refresh_seconds: 3600        # how often the score is recomputed while the screen is open
+quant:                         # the long-term score (Phase 3) and the options check (Phase 4)
+  refresh_seconds: 900         # how often the score and the options check are recomputed while the screen is open
   universe_path: universe.yaml # the reference universe (S&P 100); every factor is a z-score against it
   universe_ttl_seconds: 86400  # "refreshed nightly": bars and fundamentals older than this are pulled again
   history_days: 400            # calendar days of daily closes kept per symbol (252 trading days plus a buffer)
@@ -62,6 +62,22 @@ quant:                         # the long-term score (Phase 3)
   universe_news: true          # pull Finnhub company news for every universe name so the news factor has a universe to compare with (about 100 calls a night)
   signal_horizon_days: 63      # a long-term label is scored 63 trading days after it is produced (Phase 5)
 
+options:                       # the call / put check (Phase 4). Read-only: quotes and Greeks are looked at, never traded.
+  enabled: true
+  dte_min: 30                  # days to expiry window for the contract
+  dte_max: 60
+  target_delta: 0.50           # pick the contract whose delta is nearest this
+  min_open_interest: 500       # skip thinner contracts
+  max_spread_pct: 10           # skip a bid-ask spread wider than this share of the mid
+  direction_threshold: 1.0     # direction z beyond +1 looks at calls, beyond -1 at puts
+  max_vol_ratio: 1.2           # IV / HV60 above this = options too expensive to be a candidate
+  rate_series: DGS3MO          # FRED 3-month Treasury, the risk-free rate in Black-Scholes
+  simulations: 20000           # end prices simulated for the expected value
+  seed: 42                     # fixed so the same inputs give the same expected value
+  strike_window_pct: 25        # strikes within this share of the price are pulled
+  news_days: 7                 # the direction score's news component uses DIRECT headlines this recent
+  news_min_headlines: 3        # fewer than this and the news component is missing
+
 cache:
   path: data/terminal.db
   ttl_seconds:                 # TTL = time to live: how long a cached value is used before re-fetching
@@ -75,6 +91,9 @@ cache:
     cik: 604800                # the SEC's ticker-to-CIK table, one week
     metrics: 86400             # Finnhub fundamentals, one day
     bars_daily: 300            # the universe daily-bars pull; the closes themselves are stored for good
+    options: 300               # option chain snapshots (the indicative feed is delayed anyway)
+    contracts: 3600            # the contract list with open interest, which updates once a day
+    earnings: 86400            # the next earnings date
 
 log:
   path: logs/terminal.log

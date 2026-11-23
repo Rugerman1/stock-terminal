@@ -116,3 +116,48 @@ def test_snapshots_with_fake_client_and_cache(cfg, cache):
     assert data.calls == 1
     clock = client.clock()
     assert clock.ok and clock.value["is_open"] is False and clock.source == "alpaca/clock"
+
+
+class FakeContracts:
+    def __init__(self):
+        self.requests = []
+
+    def get_option_contracts(self, request):
+        self.requests.append(request)
+        from datetime import date
+        c = SimpleNamespace(symbol="AAPL270108C00345000", expiration_date=date(2027, 1, 8), strike_price=345.0, type=SimpleNamespace(value="call"),
+                            open_interest="734", open_interest_date=date(2026, 11, 19), close_price="13.2")
+        return SimpleNamespace(option_contracts=[c], next_page_token=None)
+
+    def get_clock(self):
+        return FakeTrading().get_clock()
+
+
+class FakeOptionData:
+    def get_option_chain(self, request):
+        quote = SimpleNamespace(bid_price=11.5, ask_price=13.8, timestamp=NOW)
+        greeks = SimpleNamespace(delta=0.5352, gamma=0.0132, theta=-0.172, vega=0.448, rho=0.18)
+        return {"AAPL270108C00345000": SimpleNamespace(latest_quote=quote, implied_volatility=0.2667, greeks=greeks)}
+
+
+def test_option_contracts_and_chain_with_fakes(cfg, cache):
+    from datetime import date
+    trading = FakeContracts()
+    client = AlpacaClient(Keys(), cache, cfg, data_client=FakeData(), trading_client=trading, option_client=FakeOptionData())
+    dp = client.option_contracts("aapl", date(2026, 12, 22), date(2027, 1, 21), "call", 258.0, 429.0)
+    assert dp.ok and dp.value == [{"symbol": "AAPL270108C00345000", "expiration_date": "2027-01-08", "strike_price": 345.0, "type": "call", "open_interest": "734", "open_interest_date": "2026-11-19", "close_price": "13.2"}]
+    req = trading.requests[0]
+    assert req.underlying_symbols == ["AAPL"] and req.strike_price_gte == "258.00" and req.type.value == "call" and req.limit == 1000
+    chain = client.option_chain("AAPL", date(2026, 12, 22), date(2027, 1, 21), "call", 258.0, 429.0)
+    snap = chain.value["AAPL270108C00345000"]
+    assert snap["bid"] == 11.5 and snap["ask"] == 13.8 and snap["iv"] == 0.2667 and snap["greeks"]["delta"] == 0.5352 and snap["quote_at"].startswith("2026")
+    client.option_contracts("AAPL", date(2026, 12, 22), date(2027, 1, 21), "call", 258.0, 429.0)
+    assert len(trading.requests) == 1                                     # cached
+
+
+def test_options_without_clients_are_missing(cfg, cache):
+    from datetime import date
+    fakes_only = AlpacaClient(Keys(), cache, cfg, data_client=FakeData())  # enabled by a fake, but no option or trading client
+    assert fakes_only.option_chain("AAPL", date(2026, 12, 22), date(2027, 1, 21), "call", 1, 2).status == MISSING
+    assert fakes_only.option_contracts("AAPL", date(2026, 12, 22), date(2027, 1, 21), "call", 1, 2).status == MISSING
+    assert AlpacaClient(Keys(), cache, cfg).option_chain("AAPL", date(2026, 12, 22), date(2027, 1, 21), "call", 1, 2).note == NO_KEY

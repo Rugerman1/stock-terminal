@@ -78,7 +78,7 @@ class LiveProvider:
         self.scorer = build_scorer(cfg)
         self.news = NewsEngine(cfg, self.store, self.scorer, self.alpaca, self.alpaca_news, self.finnhub, self.edgar, cache, logger)
         self.market = MarketStore(cfg["cache"]["path"])
-        self.quant = QuantEngine(cfg, self.market, self.store, self.news, self.alpaca, self.finnhub, cache, logger)
+        self.quant = QuantEngine(cfg, self.market, self.store, self.news, self.alpaca, self.finnhub, cache, logger, fred=self.fred)
 
     def refresh(self, symbols: list[str]) -> Board:
         clock = self.alpaca.clock()

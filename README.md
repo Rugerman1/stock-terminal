@@ -18,7 +18,7 @@ validity status. The full spec is in [docs/SPEC.md](docs/SPEC.md).
 | 1 | Skeleton: screen, watchlist, prices, market clock, VIX and 10-year, config, keys, cache, rate limits, log panel, tests | **Built 2026-11-15, live data confirmed 2026-11-18 (Alpaca) and 2026-11-22 (FRED).** |
 | 2 | News engine: relationship map, Alpaca + Finnhub + EDGAR, DIRECT / PEER / SECTOR / MACRO / FILING tags, catalyst types, FinBERT sentiment, dedupe, reaction tracker, news pane | **Built 2026-11-22, live on every source the same night:** Alpaca news, Finnhub, EDGAR, FinBERT, reactions filled from bars. |
 | 3 | Long-term score: six factors as z-scores against the S&P 100, Favorable / Neutral / Unfavorable, the `?` explain view, the signal log | **Built 2026-11-22.** |
-| 4 | Options check | Not started |
+| 4 | Options check: direction score, contract pick on the indicative feed, HV and IV, vol ratio, IV rank collection, expected move, breakeven, two probabilities of profit, simulated expected value, max loss, Greeks, Call / Put candidate or No trade with the failed check named, earnings warning, options signal log | **Built 2026-11-22.** |
 | 5 | Signal log, three validity tests, status banner | Not started |
 | 6 | Backtest, experiment log, sizing panel, extras | Not started |
 
@@ -51,6 +51,7 @@ signal log:
 
 ```powershell
 .venv\Scripts\python -m stock_terminal --score AAPL
+.venv\Scripts\python -m stock_terminal --options AAPL
 .venv\Scripts\python -m stock_terminal --universe
 .venv\Scripts\python -m stock_terminal --signals
 ```
@@ -116,7 +117,7 @@ Market CLOSED, opens Mon Nov 23 9:30 AM ET | Newest IEX trade 2d ago | Refreshed
 | `r` | refresh prices and news now (prices also refresh every `refresh_seconds`, news every `news.refresh_seconds`) |
 | `f` | cycle the news filter: ALL, DIRECT, PEER, SECTOR, MACRO, FILING |
 | `o` | open the highlighted headline in the browser (Tab into the news list, arrows to pick one) |
-| `?` | explain view for the highlighted ticker's score: the formula, every input and its source (Esc closes) |
+| `?` | explain view for the highlighted ticker: the score and the options check, every formula, input and source (Esc closes) |
 | `l` | show or hide the log panel |
 | `q` | quit |
 
@@ -133,6 +134,8 @@ How to read a number:
   with its date.
 - `LT` is the long-term label: `FAV` Favorable, `NEU` Neutral, `UNF` Unfavorable, `--` no score, `...` still computing. The
   Score tab spells it out.
+- `Opt` is the options label: `CALL` Call candidate, `PUT` Put candidate, `none` No trade, `--` no check. The Options tab
+  shows the contract, the numbers and which check failed. `Earn` is days to the next earnings date from Finnhub's calendar.
 - The validity column reads `UNPROVEN 0/30` until the app has produced and scored 30 signals (Phase 5).
 
 ## The news pane
@@ -227,6 +230,35 @@ and the explain view shows the inputs.
 Favorable for three months is one bet, not sixty), with the close at the time and a 63-trading-day horizon. Phase 5
 scores each signal against SPY when its horizon passes. `--signals` prints the log.
 
+## The options check
+
+The Options tab runs the spec's four steps for the highlighted ticker every 15 minutes and `?` explains each number.
+Read-only: quotes and Greeks are looked at, never traded, and the "contract" is a name to study, not an order.
+
+1. **Direction**: the average of three z-scores against the universe: 63-day return, price / 50-day average - 1, and
+   the plain average sentiment of the last 7 days of DIRECT headlines (needs 3). Beyond +1 looks at calls, beyond -1
+   at puts, in between is No trade before any contract is touched. The at-the-money call is still analysed so IV, HV
+   and the IV rank show.
+2. **Contract**: 30 to 60 days to expiry, delta nearest 0.50, open interest 500 or more, bid-ask spread at most 10
+   percent of the mid. Contracts and open interest come from Alpaca's contract list; quotes, implied volatility and
+   Greeks from the chain snapshot on the free indicative feed (derived quotes, trades 15 minutes delayed, said so on
+   screen). When no contract passes liquidity, the nearest-delta one is shown and the liquidity check fails.
+3. **Numbers**: HV20 and HV60 (standard deviation of daily log returns x sqrt 252); the feed's IV, or Black-Scholes
+   solved from the mid when the feed has none; vol ratio IV / HV60; IV rank from one at-the-money IV stored per day
+   (reads "collecting, n/252" until a year is in, because Alpaca has no historical IV to backfill); expected move
+   price x IV x sqrt(days / 365); breakeven strike plus (call) or minus (put) the ask and the move it needs; probability
+   of profit two ways, the market's (lognormal with IV and the risk-free rate as drift) and the model's (lognormal with
+   HV60, zero drift); expected value as the average payoff over 20,000 simulated end prices (HV60, zero drift, fixed
+   seed) minus the ask, x 100; max loss ask x 100; the feed's Greeks or Black-Scholes ones. The risk-free rate is
+   FRED's 3-month Treasury.
+4. **Label**: Call candidate or Put candidate only when direction, vol ratio (1.2 or less), the needed move within the
+   expected move, and liquidity all pass; otherwise No trade with every failed check named. Earnings before expiry
+   adds a warning that IV usually drops right after.
+
+A candidate is logged as an options signal with the close and the contract's expiry as its horizon; a changed
+contract or a return to No trade closes it. Phase 5 scores these too. `config.yaml`'s `options:` block holds every
+threshold; they are the spec's numbers, not tuned.
+
 ## How the code is laid out
 
 ```
@@ -236,9 +268,9 @@ src/stock_terminal/
   provider.py         refresh() for prices (Board) and refresh_news() for the feeds (NewsBoard)
   relationships.py    relationships.yaml: per-ticker map and the keyword tables
   clients/base.py     the shared fetch routine: cache, rate limit, stale or missing on failure
-  clients/alpaca_client.py   stock snapshots, the market clock, minute bars, daily closes for the universe
+  clients/alpaca_client.py   stock snapshots, the market clock, minute bars, daily closes, option contracts and chain snapshots
   clients/alpaca_news.py     Alpaca news
-  clients/finnhub_client.py  Finnhub company news, general news, peers, basic financials
+  clients/finnhub_client.py  Finnhub company news, general news, peers, basic financials, next earnings date
   clients/edgar_client.py    EDGAR filing lists, 8-K items, Form 4 XML parsing
   clients/fred_client.py     VIX and the 10-year yield
   news/models.py      NewsItem, the relation tag per ticker, Reaction, the feed shapes
@@ -250,7 +282,9 @@ src/stock_terminal/
   quant/factors.py    the six factors as pure functions, inputs kept for the explain view
   quant/scoring.py    z-scores, composite, labels, the Score tab and explain text
   quant/engine.py     the score refresh: universe closes, fundamentals, news factor, signal log
-  quant/store.py      SQLite tables daily_bars, scores, signals
+  quant/store.py      SQLite tables daily_bars, scores, signals, iv_history
+  quant/blackscholes.py  Black-Scholes prices, Greeks, implied vol, probabilities, the end-price simulation
+  quant/options.py    the four-step options check and its text
   datapoint.py        DataPoint: a value plus its source, age and status
   cache.py            SQLite cache (data/terminal.db)
   ratelimit.py        rolling-window rate limiter, one per client

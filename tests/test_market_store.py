@@ -42,3 +42,29 @@ def test_signal_log_records_only_label_changes(tmp_path):
     assert store.open_signal("AAPL").id == second.id
     assert store.record_label("MSFT", "Unfavorable", 480.0, NOW).direction == -1
     assert [s.ticker for s in store.signals()] == ["AAPL", "AAPL", "MSFT"] and len(store.signals(kind="options")) == 0
+
+
+def test_options_signals_change_on_contract_and_close_on_no_trade(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    first = store.record_label("AAPL", "Call candidate", 343.4, NOW, 49, kind="options", detail="AAPL270108C00345000")
+    assert first.kind == "options" and first.direction == 1 and first.horizon_days == 49 and first.note == "AAPL270108C00345000"
+    assert store.record_label("AAPL", "Call candidate", 344.0, NOW + timedelta(hours=1), 49, kind="options", detail="AAPL270108C00345000") is None
+    second = store.record_label("AAPL", "Call candidate", 345.0, NOW + timedelta(days=1), 48, kind="options", detail="AAPL270115C00350000")
+    assert second is not None and store.signals("AAPL", "options")[0].closed_at is not None        # same label, new contract
+    closed = store.close_open("AAPL", "options", 340.0, NOW + timedelta(days=2), "label changed to No trade")
+    assert closed.id == second.id and closed.close_price == 340.0 and closed.note.endswith("label changed to No trade")
+    assert store.open_signal("AAPL", "options") is None and store.close_open("AAPL", "options", 1.0, NOW, "x") is None
+    assert store.open_signal("AAPL") is None                                                           # long-term log untouched
+
+
+def test_iv_history_and_rank(tmp_path):
+    store = MarketStore(tmp_path / "m.db")
+    assert store.iv_rank("AAPL", 0.3) == (None, 0)
+    for i in range(10):
+        store.record_iv("aapl", f"2026-11-{i + 1:02d}", 0.20 + 0.01 * i, "C1")
+    store.record_iv("AAPL", "2026-11-10", 0.29, "C2")                   # same day: replaced, not duplicated
+    assert store.iv_rank("AAPL", 0.25) == (None, 10)                     # still collecting
+    rank, n = store.iv_rank("AAPL", 0.25, need=5)
+    assert n == 10 and abs(rank - (0.25 - 0.20) / (0.29 - 0.20)) < 1e-9
+    assert store.iv_rank("AAPL", 0.50, need=5)[0] == 1.0 and store.iv_rank("AAPL", 0.10, need=5)[0] == 0.0
+    assert store.iv_rank("AAPL", None, need=5) == (None, 10)

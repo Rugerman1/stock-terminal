@@ -49,6 +49,9 @@ class FakeFinnhub:
     def __init__(self):
         self.metric_calls = []
 
+    def next_earnings(self, symbol, today=None):
+        return DataPoint("2027-01-27", "finnhub/earnings-calendar", FRESH, as_of=datetime(2027, 1, 27, tzinfo=timezone.utc))
+
     def metrics(self, symbol):
         self.metric_calls.append(symbol)
         idx = MEMBERS.index(symbol) if symbol in MEMBERS else 2
@@ -74,14 +77,15 @@ class FakeNewsEngine:
         return {"pulled": 0, "new": 0, "duplicates": 0, "failed": []}
 
 
-def make(tmp_path, cfg, cache, universe_news=False, news_engine=None, alpaca=None, finnhub=None):
+def make(tmp_path, cfg, cache, universe_news=False, news_engine=None, alpaca=None, finnhub=None, options=False, fred=None):
     path = tmp_path / "universe.yaml"
     path.write_text(yaml.safe_dump({"name": "Test 8", "tickers": MEMBERS}), encoding="utf-8")
     cfg["quant"]["universe_path"] = str(path)
     cfg["quant"]["universe_news"] = universe_news
+    cfg["options"]["enabled"] = options
     market = MarketStore(tmp_path / "m.db")
     news = NewsStore(tmp_path / "n.db")
-    engine = QuantEngine(cfg, market, news, news_engine, alpaca or FakeAlpaca(), finnhub or FakeFinnhub(), cache)
+    engine = QuantEngine(cfg, market, news, news_engine, alpaca or FakeAlpaca(), finnhub or FakeFinnhub(), cache, fred=fred)
     return engine, market, news
 
 
@@ -160,3 +164,53 @@ def test_failed_bars_and_metrics_are_named(tmp_path, cfg, cache):
     u3 = market.latest_scores()["U3"]
     assert board.scored_n == 8 and u3["composite"] is not None                         # fundamentals alone still score, with the gaps named
     assert "momentum missing" in " | ".join(u3["factors"]["notes"])
+
+
+class FakeOptionsAlpaca(FakeAlpaca):
+    """Daily closes plus one liquid near-the-money call and put per request."""
+
+    def __init__(self):
+        super().__init__()
+        self.option_calls = []
+
+    def option_contracts(self, symbol, expiry_from, expiry_to, kind, strike_lo, strike_hi):
+        self.option_calls.append((symbol, kind))
+        expiry = (expiry_from + timedelta(days=15)).isoformat()
+        strike = round((strike_lo + strike_hi) / 2)
+        letter = "C" if kind == "call" else "P"
+        return DataPoint([{"symbol": f"{symbol}{letter}{strike}", "expiration_date": expiry, "strike_price": strike, "type": kind, "open_interest": "1500"}], "alpaca/option-contracts", FRESH)
+
+    def option_chain(self, symbol, expiry_from, expiry_to, kind, strike_lo, strike_hi):
+        strike = round((strike_lo + strike_hi) / 2)
+        letter = "C" if kind == "call" else "P"
+        delta = 0.52 if kind == "call" else -0.48
+        return DataPoint({f"{symbol}{letter}{strike}": {"bid": 4.0, "ask": 4.3, "iv": 0.22, "greeks": {"delta": delta, "gamma": 0.02, "theta": -0.04, "vega": 0.1}, "quote_at": NOW.isoformat()}}, "alpaca/option-chain", FRESH)
+
+
+class FakeFred:
+    def latest(self, series_id):
+        return DataPoint(4.34, f"fred/{series_id}", FRESH, as_of=NOW)
+
+
+def test_options_check_runs_per_ticker_and_logs_candidates(tmp_path, cfg, cache):
+    alpaca = FakeOptionsAlpaca()
+    engine, market, news = make(tmp_path, cfg, cache, alpaca=alpaca, options=True, fred=FakeFred())
+    board = engine.refresh(["AAPL", "U0"], now=NOW)
+    assert set(board.options) == {"AAPL", "U0"} and board.earnings["AAPL"].value == "2027-01-27"
+    aapl = board.options["AAPL"]
+    # AAPL is the fastest grower of the eight (by construction), so its 63-day return and 50-day ratio sit well above the universe.
+    assert aapl.direction.value is not None and aapl.direction.value >= 1.0 and aapl.side == "call"
+    assert aapl.contract is not None and aapl.contract.kind == "call" and aapl.metrics["iv"] == 0.22
+    assert aapl.metrics["iv_days"] == 1 and aapl.metrics["iv_rank"] is None          # today's IV stored, rank collecting
+    assert market.iv_rank("AAPL", 0.22) == (None, 1)
+    assert ("AAPL", "call") in alpaca.option_calls
+    u0 = board.options["U0"]
+    assert u0.direction.value is not None and u0.direction.value <= -1.0 and u0.side == "put" and u0.contract.kind == "put"
+    option_signals = market.signals(kind="options")
+    labels = {s.ticker: s.label for s in option_signals}
+    for ticker, res in board.options.items():
+        if res.label != "No trade":
+            assert labels[ticker] == res.label and any(e.startswith(f"{ticker} options:") for e in board.signals)
+    # A second run with the same labels logs nothing new; the IV for the day is stored once.
+    board2 = engine.refresh(["AAPL", "U0"], now=NOW + timedelta(hours=1))
+    assert not any("options" in e for e in board2.signals) and market.iv_rank("AAPL", 0.22)[1] == 1

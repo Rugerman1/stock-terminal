@@ -57,10 +57,20 @@ SCHEMA = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS signals_open ON signals(ticker, kind, closed_at)",
+    """
+    CREATE TABLE IF NOT EXISTS iv_history (
+        symbol TEXT NOT NULL,
+        date TEXT NOT NULL,
+        iv REAL NOT NULL,
+        contract TEXT,
+        PRIMARY KEY (symbol, date)
+    )
+    """,
 )
 
 LONG_TERM = "long_term"
-DIRECTIONS = {"Favorable": 1, "Unfavorable": -1, "Neutral": 0}
+OPTIONS = "options"
+DIRECTIONS = {"Favorable": 1, "Unfavorable": -1, "Neutral": 0, "Call candidate": 1, "Put candidate": -1, "No trade": 0}
 
 
 @dataclass
@@ -172,26 +182,58 @@ class MarketStore:
         return self._signal(row) if row else None
 
     def record_label(
-        self, ticker: str, label: str, price: Optional[float], at: datetime, horizon_days: int = 63, kind: str = LONG_TERM
+        self, ticker: str, label: str, price: Optional[float], at: datetime, horizon_days: int = 63, kind: str = LONG_TERM, detail: str = ""
     ) -> Optional[Signal]:
-        """Open a new signal when the label differs from the open one (closing the old). Returns the new signal, or None."""
+        """Open a new signal when the label (or its detail, the contract for options) differs from the open one, closing
+        the old. Returns the new signal, or None when nothing changed."""
         ticker = ticker.upper()
         current = self.open_signal(ticker, kind)
-        if current is not None and current.label == label:
+        if current is not None and current.label == label and (not detail or current.note == detail):
             return None
         with self._lock, self._connect() as con:
             if current is not None:
                 con.execute(
                     "UPDATE signals SET closed_at = ?, close_price = ?, note = ? WHERE id = ?",
-                    (iso(at), price, f"label changed to {label}", current.id),
+                    (iso(at), price, (current.note + "; " if current.note else "") + f"label changed to {label}", current.id),
                 )
             cur = con.execute(
-                "INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note) VALUES (?, ?, ?, ?, ?, ?, ?, '')",
-                (ticker, kind, label, DIRECTIONS.get(label, 0), iso(at), price, horizon_days),
+                "INSERT INTO signals (ticker, kind, label, direction, opened_at, open_price, horizon_days, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (ticker, kind, label, DIRECTIONS.get(label, 0), iso(at), price, horizon_days, detail),
             )
             new_id = cur.lastrowid
             row = con.execute("SELECT * FROM signals WHERE id = ?", (new_id,)).fetchone()
         return self._signal(row)
+
+    def close_open(self, ticker: str, kind: str, price: Optional[float], at: datetime, reason: str) -> Optional[Signal]:
+        """Close the open signal of this kind, if any (an options candidate that turned into No trade)."""
+        current = self.open_signal(ticker, kind)
+        if current is None:
+            return None
+        with self._lock, self._connect() as con:
+            con.execute(
+                "UPDATE signals SET closed_at = ?, close_price = ?, note = ? WHERE id = ?",
+                (iso(at), price, (current.note + "; " if current.note else "") + reason, current.id),
+            )
+            row = con.execute("SELECT * FROM signals WHERE id = ?", (current.id,)).fetchone()
+        return self._signal(row)
+
+    # ----- implied volatility history (one at-the-money IV per symbol per day, for IV rank) -----
+    def record_iv(self, symbol: str, day: str, iv: float, contract: str = "") -> None:
+        with self._lock, self._connect() as con:
+            con.execute("INSERT OR REPLACE INTO iv_history (symbol, date, iv, contract) VALUES (?, ?, ?, ?)", (symbol.upper(), day, float(iv), contract))
+
+    def iv_rank(self, symbol: str, iv_now: Optional[float], window: int = 252, need: int = 252) -> tuple[Optional[float], int]:
+        """(rank between 0 and 1, days stored). The rank is None until `need` days are stored: the spec says collecting, n/252."""
+        with self._lock, self._connect() as con:
+            rows = con.execute("SELECT iv FROM iv_history WHERE symbol = ? ORDER BY date DESC LIMIT ?", (symbol.upper(), window)).fetchall()
+        values = [float(r["iv"]) for r in rows]
+        n = len(values)
+        if iv_now is None or n < need:
+            return None, n
+        lo, hi = min(values), max(values)
+        if hi <= lo:
+            return None, n
+        return max(0.0, min(1.0, (iv_now - lo) / (hi - lo))), n
 
     def signals(self, ticker: Optional[str] = None, kind: Optional[str] = None) -> list[Signal]:
         sql, params = "SELECT * FROM signals", []
