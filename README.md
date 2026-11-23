@@ -226,8 +226,11 @@ universe by composite = Favorable, bottom 20 percent = Unfavorable, the rest Neu
 cut-offs live in `config.yaml` and are starting guesses from the spec, never tuned to past data.
 
 Two choices the spec left open, both shown in the explain view: quality's three parts have different units (percent,
-percent, ratio), so each is z-scored against the universe before averaging; value's two parts are both yields, so
-they average as written. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
+percent, ratio), so each is z-scored against the universe before averaging, and each is clipped at the universe's 5th
+and 95th percentile before the mean and std are taken (`quant.quality_clip_pct`, 0 turns it off), because a few
+near-zero-equity names (ROE of 575 percent, debt-to-equity of 81) otherwise stretch the spread until everyone else's z
+collapses toward zero; a clipped name says so in the explain view. Value's two parts are both yields, so they average
+as written. Prices are split-adjusted; fundamentals are Finnhub's trailing-twelve-month figures as of
 the fetch time shown. A yield beyond 100 percent (earnings or cash flow per share larger than the price) is a data
 error, not a bargain, and is rejected with a note: Finnhub reports Berkshire's Class A earnings per B share. Free cash
 flow yield is not meaningful for banks, so their value factor leans on an inflated number; the spec's formula is kept
